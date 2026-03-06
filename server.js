@@ -103,14 +103,31 @@ function normF(m, code) {
   const saF = m.score?.fullTime?.away  ?? 0;
   const shH = m.score?.halfTime?.home  ?? 0;
   const saH = m.score?.halfTime?.away  ?? 0;
+
+  // football-data.org: m.minute es el minuto actual, m.injuryTime es tiempo añadido
+  // En segunda parte a veces minute viene null — calculamos desde currentPeriodStartedAt
+  let min = 0;
+  if (m.status === 'PAUSED') {
+    min = 45;
+  } else if (m.status === 'IN_PLAY') {
+    if (m.minute && m.minute > 0) {
+      min = m.minute;
+    } else if (m.currentPeriodStartedAt) {
+      const elapsed = Math.floor((Date.now() - new Date(m.currentPeriodStartedAt).getTime()) / 60000);
+      // Si hay medio tiempo, estamos en 2ª parte
+      const hasHT = shH != null;
+      min = hasHT ? Math.min(45 + elapsed, 90) : Math.min(elapsed, 45);
+    }
+  }
+
   return {
     id: 'fd_' + m.id,
     league: code === 'PD' ? 'LaLiga EA Sports' : 'Premier League',
     k:      code === 'PD' ? 'laliga' : 'premier',
     status: m.status,
-    min:    m.minute || (m.status === 'PAUSED' ? 45 : 0),
-    h:      m.homeTeam?.shortName || m.homeTeam?.name || '?',
-    a:      m.awayTeam?.shortName || m.awayTeam?.name || '?',
+    min,
+    h:  m.homeTeam?.shortName || m.homeTeam?.name || '?',
+    a:  m.awayTeam?.shortName || m.awayTeam?.name || '?',
     lh: shF, la: saF,
     g2: (shF - shH) + (saF - saH),
     utcDate: m.utcDate,
@@ -153,7 +170,7 @@ function checkFootballAlerts() {
       };
       simAlerts.unshift(sim);
       if (simAlerts.length > 500) simAlerts.length = 500;
-      sendTG(`⚽ ROTURAS25 — FÚTBOL ALERTA\n${m.league}\n${m.h} vs ${m.a}\n⏱ Min.${m.min} · Marcador: 0-0\n→ APOSTAR: Habrá gol en 1ª parte`);
+      sendTG(`⚽ ROTURAS25 — ALERTA GOLEADORA\n━━━━━━━━━━━━━━━━━━━━\n${m.h} vs ${m.a}\n📍 ${m.league}\n━━━━━━━━━━━━━━━━━━━━\n📊 Marcador: ${m.lh}-${m.la} · Min. ${m.min}\n⚡ 0-0 a punto de acabar la 1ª parte\n→ APOSTAR: Gol antes del descanso`);
     }
 
     const k67 = '67_' + m.id;
@@ -168,7 +185,7 @@ function checkFootballAlerts() {
       };
       simAlerts.unshift(sim);
       if (simAlerts.length > 500) simAlerts.length = 500;
-      sendTG(`⚽ ROTURAS25 — FÚTBOL ALERTA\n${m.league}\n${m.h} vs ${m.a}\n⏱ Min.${m.min} · Sin gol en 2ª parte\n→ APOSTAR: Habrá gol en 2ª parte`);
+      sendTG(`⚽ ROTURAS25 — ALERTA GOLEADORA\n━━━━━━━━━━━━━━━━━━━━\n${m.h} vs ${m.a}\n📍 ${m.league}\n━━━━━━━━━━━━━━━━━━━━\n📊 Marcador: ${m.lh}-${m.la} · Min. ${m.min}\n⚡ Sin gol en 2ª parte — se acaba el tiempo\n→ APOSTAR: Habrá gol en 2ª parte`);
     }
   });
 }
@@ -282,21 +299,30 @@ function normT(e) {
 
 function normTUp(e) {
   const cat = getCat((e.country_name || '') + ' ' + (e.league_name || ''));
-  const dt  = new Date(`${e.event_date}T${e.event_time || '00:00'}:00`);
 
-  // AllSportsAPI Fixtures también devuelve odds en e.odds[]
-  const oddsArr = e.odds || e.live_odds || [];
+  // football-data Fixtures usa event_date + event_time pero a veces en UTC
+  // Construimos la fecha de forma segura
+  let dt;
+  try {
+    dt = new Date(`${e.event_date}T${(e.event_time || '00:00').replace(':','').length === 4 ? e.event_time : e.event_time || '00:00'}:00`);
+    if (isNaN(dt.getTime())) dt = new Date();
+  } catch { dt = new Date(); }
+
+  // AllSportsAPI Fixtures: cuotas pueden venir en varios campos según la versión
+  // Probamos todos los posibles
+  const oddsArr = e.odds || e.live_odds || e['1x2_odds'] || [];
   let o1 = null, o2 = null;
   if (Array.isArray(oddsArr) && oddsArr.length > 0) {
     oddsArr.forEach(o => {
-      const t = (o.type || o.odd_type || '').toLowerCase();
-      const v = parseFloat(o.value || o.odd_value || o.odd);
+      const t = (o.type || o.odd_type || o.name || '').toLowerCase();
+      const v = parseFloat(o.value || o.odd_value || o.odd || o.odd1 || 0);
       if (isNaN(v) || v <= 1) return;
-      if (['1','1/win','home','player 1','first player'].includes(t) && !o1) o1 = v;
-      if (['2','2/win','away','player 2','second player'].includes(t) && !o2) o2 = v;
+      if (['1','1/win','home','player 1','first player','p1'].includes(t) && !o1) o1 = v;
+      if (['2','2/win','away','player 2','second player','p2'].includes(t) && !o2) o2 = v;
     });
+    // Fallback: primeros dos valores válidos
     if (!o1 && !o2) {
-      const valid = oddsArr.filter(o => parseFloat(o.value || o.odd_value || o.odd) > 1);
+      const valid = oddsArr.filter(o => parseFloat(o.value || o.odd_value || o.odd || 0) > 1);
       if (valid[0]) o1 = parseFloat(valid[0].value || valid[0].odd_value || valid[0].odd);
       if (valid[1]) o2 = parseFloat(valid[1].value || valid[1].odd_value || valid[1].odd);
     }
@@ -305,11 +331,14 @@ function normTUp(e) {
   const mon = (o1 != null && o1 >= ODD_MIN && o1 <= ODD_MAX) ||
               (o2 != null && o2 >= ODD_MIN && o2 <= ODD_MAX);
 
+  // Jugadores: AllSportsAPI usa event_first_player / event_second_player en Fixtures
+  const p1 = e.event_first_player  || e.home_team_name || e.player1 || '?';
+  const p2 = e.event_second_player || e.away_team_name || e.player2 || '?';
+
   return {
     id: 'tdu_' + e.event_key, cat,
-    trn: e.league_name || 'Torneo',
-    p1:  e.event_first_player  || '?',
-    p2:  e.event_second_player || '?',
+    trn: e.league_name || e.tournament_name || 'Torneo',
+    p1, p2,
     o1, o2, mon, hasOdds: o1 != null || o2 != null,
     localT: dt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' }),
     localD: dt.toLocaleDateString('es-ES', { weekday: 'short', day: '2-digit', month: '2-digit' }),
@@ -327,6 +356,14 @@ async function fetchTennis() {
   // FILTRO INDIVIDUALES: excluir dobles
   const liveRaw = (lR.status === 'fulfilled' && lR.value.result) ? lR.value.result : [];
   const upRaw   = (uR.status === 'fulfilled' && uR.value.result) ? uR.value.result : [];
+
+  // DEBUG: log estructura de cuotas en el primer partido upcoming
+  const sample = upRaw.find(e => e.event_live === '0' && !isDoubles(e));
+  if (sample) {
+    console.log('[ODDS DEBUG] Keys del partido upcoming:', Object.keys(sample).filter(k => k.includes('odd') || k.includes('bet') || k.includes('market') || k.includes('1x2')));
+    console.log('[ODDS DEBUG] odds:', JSON.stringify(sample.odds || sample.live_odds || sample.event_odds || 'ninguno').slice(0, 300));
+    console.log('[ODDS DEBUG] Jugadores:', sample.event_first_player, 'vs', sample.event_second_player);
+  }
 
   const live = liveRaw.filter(e => !isDoubles(e) && e.event_status !== 'Finished').map(normT);
   const up   = upRaw.filter(e => e.event_live === '0' && !isDoubles(e)).map(normTUp);
@@ -356,11 +393,18 @@ function checkTennisAlerts(live) {
 
     const favIs   = (m.o1 != null && m.o1 >= ODD_MIN && m.o1 <= ODD_MAX) ? 'First Player' : 'Second Player';
     const favName = favIs === 'First Player' ? m.p1 : m.p2;
-    const favO    = favIs === 'First Player' ? m.o1  : m.o2;
+    const rivName = favIs === 'First Player' ? m.p2 : m.p1;
+    const favO    = favIs === 'First Player' ? m.o1 : m.o2;
+    const rivO    = favIs === 'First Player' ? m.o2 : m.o1;
+    const gFav    = favIs === 'First Player' ? m.lastBreak.gP1 : m.lastBreak.gP2;
+    const gRiv    = favIs === 'First Player' ? m.lastBreak.gP2 : m.lastBreak.gP1;
+    const setsP1  = m.sets1.filter((s,i) => s > (m.sets2[i]||0)).length;
+    const setsP2  = m.sets2.filter((s,i) => s > (m.sets1[i]||0)).length;
 
     // Registrar en simulador
     const sim = {
-      id: kb, type: 'tennis_break', match: `${m.p1} vs ${m.p2}`,
+      id: kb, type: 'tennis_break',
+      match: `${m.p1} vs ${m.p2}`,
       detail: `${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: ${m.lastBreak.gP1}–${m.lastBreak.gP2} · Fav: ${favName}`,
       alertedAt: nowISO(), resolved: false, outcome: null,
       _eventId: m.id,
@@ -372,14 +416,24 @@ function checkTennisAlerts(live) {
     simAlerts.unshift(sim);
     if (simAlerts.length > 500) simAlerts.length = 500;
 
+    // Mensaje Telegram
     sendTG(
-      `🎾 ROTURAS25 — ROTURA\n` +
-      `${m.p1} vs ${m.p2}\n` +
+      `🎾 ROTURAS25 — ROTURA DE SAQUE\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
       `${m.trn} [${m.cat.toUpperCase()}]\n` +
-      `⚠ ${favName} ROTADO · cuota pre-match: ${favO != null ? favO + 'x' : 'n/d (partido ya en curso)'}\n` +
-      `Set ${m.curSetNum}: ${m.p1} ${m.lastBreak.gP1}–${m.lastBreak.gP2} ${m.p2}\n` +
-      `${favName} va PERDIENDO el set\n` +
-      `→ APOSTAR que ${favName} gana el set`
+      `\n` +
+      `${m.p1} vs ${m.p2}\n` +
+      `Sets: ${m.p1} ${setsP1}–${setsP2} ${m.p2}\n` +
+      `Set ${m.curSetNum} actual: ${m.p1} ${m.lastBreak.gP1}–${m.lastBreak.gP2} ${m.p2}\n` +
+      `\n` +
+      `⚠️ Rotado: ${favName} (FAVORITO)\n` +
+      `Va PERDIENDO el set ${m.curSetNum} por ${gFav}–${gRiv}\n` +
+      `\n` +
+      `💰 Cuotas pre-partido:\n` +
+      `  ${favName}: ${favO != null ? favO + 'x ← FAVORITO' : 'n/d (partido ya en curso)'}\n` +
+      `  ${rivName}: ${rivO != null ? rivO + 'x' : 'n/d'}\n` +
+      `\n` +
+      `→ APUESTA: ${favName} gana el set ${m.curSetNum}`
     );
   });
 }
