@@ -2,9 +2,7 @@ const http  = require('http');
 const https = require('https');
 
 // ═══════════════════════════════════════════════════════════
-// ROTURAS25 — SERVIDOR AUTÓNOMO
-// El servidor hace el polling y envía alertas a Telegram.
-// La app HTML solo sirve para consultar y registrar apuestas.
+// ROTURAS25 — SERVIDOR AUTÓNOMO v3
 // ═══════════════════════════════════════════════════════════
 
 const FOOTBALL_KEY = process.env.FOOTBALL_KEY || '';
@@ -13,18 +11,27 @@ const TG_TOKEN     = process.env.TG_TOKEN     || '8171273424:AAGMvAxhDnt-HSZSZi8
 const TG_CHAT      = process.env.TG_CHAT      || '6307700447';
 const PORT         = process.env.PORT         || 3000;
 
-// Cuota fav mín/máx (ajustable via variables de entorno)
 const ODD_MIN = parseFloat(process.env.ODD_MIN || '1.20');
 const ODD_MAX = parseFloat(process.env.ODD_MAX || '1.60');
 
-// ── Alertas ya enviadas (evita duplicados en memoria) ──
-const alerted = new Set();
-
-// ── Estado en memoria para que la app pueda consultar ──
+// ── Estado en memoria ──
+const alerted    = new Set();   // claves de alertas ya enviadas
 let lastFootball = [];
 let lastTennis   = [];
+let allFootballForSim = [];  // incluye finalizados para resolver simulaciones
 let lastUpdate   = null;
-let stats = { pollCount: 0, alertsSent: 0, errors: 0 };
+let stats        = { pollCount: 0, alertsSent: 0, errors: 0 };
+
+// ── Simulador: registro de TODAS las alertas con resultado ──
+// Estructura: { id, type, match, detail, alertedAt, resolved, outcome }
+// outcome: null | 'WIN' | 'LOSS'
+// Para tenis: monitoriza si fav ganó el set
+// Para fútbol: monitoriza si hubo gol tras la alerta
+const simAlerts = [];   // array, máx 500 entradas
+
+// ── Para monitorizar resultados post-alerta ──
+// clave → { setNum, favIs, scorePending }
+const pendingResolution = new Map();
 
 // ═══════════════════════════════════════════════════════════
 // UTILIDADES
@@ -60,20 +67,31 @@ async function sendTG(msg) {
       req.write(body); req.end();
     });
     stats.alertsSent++;
-    console.log('[TG]', msg.slice(0, 80));
   } catch(e) {
     console.error('[TG ERROR]', e.message);
   }
 }
 
-function todayStr() { return new Date().toISOString().split('T')[0]; }
+function todayStr()    { return new Date().toISOString().split('T')[0]; }
 function tomorrowStr() { return new Date(Date.now() + 86400000).toISOString().split('T')[0]; }
+function nowISO()      { return new Date().toISOString(); }
 
-// ¿Hay partidos en juego ahora mismo?
 function hasLiveMatches() {
-  const liveF = lastFootball.some(m => m.status === 'IN_PLAY' || m.status === 'PAUSED');
-  const liveT = lastTennis.some(m => !m.isUp);
-  return liveF || liveT;
+  return lastFootball.some(m => m.status === 'IN_PLAY' || m.status === 'PAUSED')
+      || lastTennis.some(m => !m.isUp);
+}
+
+// Detectar si un nombre de partido/torneo es de dobles
+// AllSportsAPI incluye "Doubles" o "/" en los nombres de los jugadores (p.ej. "Smith/Jones")
+function isDoubles(e) {
+  const p1 = (e.event_first_player  || '').trim();
+  const p2 = (e.event_second_player || '').trim();
+  const lg = (e.league_name || '').toLowerCase();
+  // Doubles si el nombre del jugador contiene "/" (dos apellidos)
+  if (p1.includes('/') || p2.includes('/')) return true;
+  // O si el torneo lo dice explícitamente
+  if (lg.includes('double') || lg.includes('doble')) return true;
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -88,14 +106,16 @@ function normF(m, code) {
   return {
     id: 'fd_' + m.id,
     league: code === 'PD' ? 'LaLiga EA Sports' : 'Premier League',
-    k: code === 'PD' ? 'laliga' : 'premier',
+    k:      code === 'PD' ? 'laliga' : 'premier',
     status: m.status,
-    min: m.minute || (m.status === 'PAUSED' ? 45 : 0),
-    h: m.homeTeam?.shortName || m.homeTeam?.name || '?',
-    a: m.awayTeam?.shortName || m.awayTeam?.name || '?',
+    min:    m.minute || (m.status === 'PAUSED' ? 45 : 0),
+    h:      m.homeTeam?.shortName || m.homeTeam?.name || '?',
+    a:      m.awayTeam?.shortName || m.awayTeam?.name || '?',
     lh: shF, la: saF,
     g2: (shF - shH) + (saF - saH),
     utcDate: m.utcDate,
+    a25: alerted.has('25_fd_' + m.id),
+    a67: alerted.has('67_fd_' + m.id),
   };
 }
 
@@ -106,10 +126,14 @@ async function fetchFootball() {
     fetchJson(`https://api.football-data.org/v4/competitions/PD/matches?dateFrom=${t}&dateTo=${tm}`, { 'X-Auth-Token': FOOTBALL_KEY }),
     fetchJson(`https://api.football-data.org/v4/competitions/PL/matches?dateFrom=${t}&dateTo=${tm}`, { 'X-Auth-Token': FOOTBALL_KEY }),
   ]);
-  lastFootball = [
+  // Guardamos todos para resolver alertas, pero solo mostramos los no finalizados
+  const allMatches = [
     ...(pd.matches || []).map(m => normF(m, 'PD')),
     ...(pl.matches || []).map(m => normF(m, 'PL')),
   ];
+  lastFootball = allMatches.filter(m => m.status !== 'FINISHED');
+  // Para resolución del simulador también necesitamos los finalizados
+  allFootballForSim = allMatches;
 }
 
 function checkFootballAlerts() {
@@ -119,13 +143,56 @@ function checkFootballAlerts() {
     const k25 = '25_' + m.id;
     if (m.min >= 24 && m.min <= 31 && m.lh === 0 && m.la === 0 && !alerted.has(k25)) {
       alerted.add(k25);
+      const sim = {
+        id: k25, type: 'football_ht', match: `${m.h} vs ${m.a}`,
+        detail: `${m.league} · Min.${m.min} · 0-0 → Gol 1ª parte`,
+        alertedAt: nowISO(), resolved: false, outcome: null,
+        // para resolución: necesitamos que al final del HT haya gol
+        _matchId: m.id, _resolveOn: 'ht_goal',
+        _scoreAtAlert: { lh: m.lh, la: m.la },
+      };
+      simAlerts.unshift(sim);
+      if (simAlerts.length > 500) simAlerts.length = 500;
       sendTG(`⚽ ROTURAS25 — FÚTBOL ALERTA\n${m.league}\n${m.h} vs ${m.a}\n⏱ Min.${m.min} · Marcador: 0-0\n→ APOSTAR: Habrá gol en 1ª parte`);
     }
 
     const k67 = '67_' + m.id;
     if (m.min >= 66 && m.min <= 73 && m.g2 === 0 && !alerted.has(k67)) {
       alerted.add(k67);
+      const sim = {
+        id: k67, type: 'football_2h', match: `${m.h} vs ${m.a}`,
+        detail: `${m.league} · Min.${m.min} · Sin gol 2ªP → Gol 2ª parte`,
+        alertedAt: nowISO(), resolved: false, outcome: null,
+        _matchId: m.id, _resolveOn: 'sh_goal',
+        _scoreAtAlert: { lh: m.lh, la: m.la, g2: m.g2 },
+      };
+      simAlerts.unshift(sim);
+      if (simAlerts.length > 500) simAlerts.length = 500;
       sendTG(`⚽ ROTURAS25 — FÚTBOL ALERTA\n${m.league}\n${m.h} vs ${m.a}\n⏱ Min.${m.min} · Sin gol en 2ª parte\n→ APOSTAR: Habrá gol en 2ª parte`);
+    }
+  });
+}
+
+// Resolver alertas de fútbol pendientes
+function resolveFootballSims() {
+  simAlerts.forEach(s => {
+    if (s.resolved || !s._matchId) return;
+    const m = allFootballForSim.find(x => x.id === 'fd_' + s._matchId);
+    if (!m) return;
+
+    if (s._resolveOn === 'ht_goal' && (m.status === 'PAUSED' || m.status === 'IN_PLAY' && m.min > 45 || m.status === 'FINISHED')) {
+      const goalsAtHT = m.lh + m.la;  // tras el descanso o fin
+      s.outcome  = goalsAtHT > 0 ? 'WIN' : 'LOSS';
+      s.resolved = true;
+      s.resolvedAt = nowISO();
+      console.log(`[SIM] ${s.id} → ${s.outcome} (goles HT: ${goalsAtHT})`);
+    }
+
+    if (s._resolveOn === 'sh_goal' && m.status === 'FINISHED') {
+      s.outcome  = m.g2 > 0 ? 'WIN' : 'LOSS';
+      s.resolved = true;
+      s.resolvedAt = nowISO();
+      console.log(`[SIM] ${s.id} → ${s.outcome} (goles 2ªP: ${m.g2})`);
     }
   });
 }
@@ -145,36 +212,44 @@ function getCat(s) {
 
 function normT(e) {
   const cat  = getCat((e.country_name || '') + ' ' + (e.league_name || ''));
-  const odds = e.live_odds || [];
+
+  // ── Cuotas pre-match ──
+  // live_odds solo existe cuando la API tiene mercado disponible para ese partido.
+  // Si el partido empezó antes de que el servidor arrancara, puede que no haya cuotas.
+  // Intentamos varias rutas del objeto según la versión de la API.
+  const odds = e.live_odds || e.odds || [];
   let o1 = null, o2 = null;
-  odds.forEach(o => {
-    const t = (o.type || '').toLowerCase(), v = parseFloat(o.value);
-    if (isNaN(v) || v <= 1) return;
-    if (['1','1/win','home'].includes(t) && !o1) o1 = v;
-    if (['2','2/win','away'].includes(t) && !o2) o2 = v;
-  });
-  // fallback
-  if (!o1 && !o2) {
-    const wm = odds.find(o => (o.odd_name || '').toLowerCase().includes('winner'));
-    if (wm) {
-      const a = odds.filter(o => (o.type || '').includes('1'));
-      const b = odds.filter(o => (o.type || '').includes('2'));
-      if (a[0]) o1 = parseFloat(a[0].value) || null;
-      if (b[0]) o2 = parseFloat(b[0].value) || null;
+  if (Array.isArray(odds) && odds.length > 0) {
+    odds.forEach(o => {
+      const t = (o.type || o.odd_type || '').toLowerCase();
+      const v = parseFloat(o.value || o.odd_value || o.odd);
+      if (isNaN(v) || v <= 1) return;
+      if (['1','1/win','home','player 1','first player'].includes(t) && !o1) o1 = v;
+      if (['2','2/win','away','player 2','second player'].includes(t) && !o2) o2 = v;
+    });
+    // Fallback: si el tipo no coincide, coge el primero y segundo con odds > 1
+    if (!o1 && !o2) {
+      const valid = odds.filter(o => parseFloat(o.value || o.odd_value || o.odd) > 1);
+      if (valid[0]) o1 = parseFloat(valid[0].value || valid[0].odd_value || valid[0].odd);
+      if (valid[1]) o2 = parseFloat(valid[1].value || valid[1].odd_value || valid[1].odd);
     }
   }
 
   const scores = e.scores || [];
   const sets1 = [], sets2 = [];
-  scores.forEach(s => { sets1.push(parseInt(s.score_first)||0); sets2.push(parseInt(s.score_second)||0); });
-  const gr = (e.event_game_result || '0 - 0').split(' - ');
-  const g1 = (gr[0] || '0').trim(), g2 = (gr[1] || '0').trim();
+  scores.forEach(s => {
+    sets1.push(parseInt(s.score_first)  || 0);
+    sets2.push(parseInt(s.score_second) || 0);
+  });
+  const gr  = (e.event_game_result || '0 - 0').split(' - ');
+  const g1  = (gr[0] || '0').trim();
+  const g2  = (gr[1] || '0').trim();
   const curSetNum = scores.length + 1;
 
   // Point-by-point break detection
-  const pbp = e.pointbypoint || [];
-  const curGames = pbp.filter(g => g.set_number === 'Set ' + curSetNum);
-  let lastBreak = null;
+  const pbp       = e.pointbypoint || [];
+  const curGames  = pbp.filter(g => g.set_number === 'Set ' + curSetNum);
+  let lastBreak   = null;
   if (curGames.length > 0) {
     const last = curGames[curGames.length - 1];
     if (last && last.serve_lost != null && last.serve_lost !== '') {
@@ -195,24 +270,47 @@ function normT(e) {
   return {
     id: 'td_' + e.event_key, cat,
     trn: e.league_name || 'Torneo',
-    p1: e.event_first_player  || '?',
-    p2: e.event_second_player || '?',
+    p1:  e.event_first_player  || '?',
+    p2:  e.event_second_player || '?',
     o1, o2, sets1, sets2, g1, g2,
     srv: e.event_serve === 'First Player' ? 1 : 2,
     curSetNum, lastBreak, pbpLen: pbp.length, mon,
     isUp: false,
+    hasOdds: o1 != null || o2 != null,
   };
 }
 
 function normTUp(e) {
   const cat = getCat((e.country_name || '') + ' ' + (e.league_name || ''));
   const dt  = new Date(`${e.event_date}T${e.event_time || '00:00'}:00`);
+
+  // AllSportsAPI Fixtures también devuelve odds en e.odds[]
+  const oddsArr = e.odds || e.live_odds || [];
+  let o1 = null, o2 = null;
+  if (Array.isArray(oddsArr) && oddsArr.length > 0) {
+    oddsArr.forEach(o => {
+      const t = (o.type || o.odd_type || '').toLowerCase();
+      const v = parseFloat(o.value || o.odd_value || o.odd);
+      if (isNaN(v) || v <= 1) return;
+      if (['1','1/win','home','player 1','first player'].includes(t) && !o1) o1 = v;
+      if (['2','2/win','away','player 2','second player'].includes(t) && !o2) o2 = v;
+    });
+    if (!o1 && !o2) {
+      const valid = oddsArr.filter(o => parseFloat(o.value || o.odd_value || o.odd) > 1);
+      if (valid[0]) o1 = parseFloat(valid[0].value || valid[0].odd_value || valid[0].odd);
+      if (valid[1]) o2 = parseFloat(valid[1].value || valid[1].odd_value || valid[1].odd);
+    }
+  }
+
+  const mon = (o1 != null && o1 >= ODD_MIN && o1 <= ODD_MAX) ||
+              (o2 != null && o2 >= ODD_MIN && o2 <= ODD_MAX);
+
   return {
     id: 'tdu_' + e.event_key, cat,
     trn: e.league_name || 'Torneo',
-    p1: e.event_first_player  || '?',
-    p2: e.event_second_player || '?',
-    o1: null, o2: null, mon: false,
+    p1:  e.event_first_player  || '?',
+    p2:  e.event_second_player || '?',
+    o1, o2, mon, hasOdds: o1 != null || o2 != null,
     localT: dt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' }),
     localD: dt.toLocaleDateString('es-ES', { weekday: 'short', day: '2-digit', month: '2-digit' }),
     isUp: true,
@@ -220,13 +318,19 @@ function normTUp(e) {
 }
 
 async function fetchTennis() {
-  if (!TENNIS_KEY) return;
+  if (!TENNIS_KEY) return [];
   const [lR, uR] = await Promise.allSettled([
     fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Livescore&APIkey=${TENNIS_KEY}`),
     fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Fixtures&APIkey=${TENNIS_KEY}&from=${todayStr()}&to=${tomorrowStr()}`),
   ]);
-  const live = (lR.status === 'fulfilled' && lR.value.result) ? lR.value.result.map(normT) : [];
-  const up   = (uR.status === 'fulfilled' && uR.value.result) ? uR.value.result.filter(e => e.event_live === '0').map(normTUp) : [];
+
+  // FILTRO INDIVIDUALES: excluir dobles
+  const liveRaw = (lR.status === 'fulfilled' && lR.value.result) ? lR.value.result : [];
+  const upRaw   = (uR.status === 'fulfilled' && uR.value.result) ? uR.value.result : [];
+
+  const live = liveRaw.filter(e => !isDoubles(e) && e.event_status !== 'Finished').map(normT);
+  const up   = upRaw.filter(e => e.event_live === '0' && !isDoubles(e)).map(normTUp);
+
   lastTennis = [...live, ...up];
   return live;
 }
@@ -240,7 +344,7 @@ function isBreakAlert(m) {
   if (m.lastBreak.broken !== favIs) return false;
   const favG = favIs === 'First Player' ? m.lastBreak.gP1 : m.lastBreak.gP2;
   const rivG = favIs === 'First Player' ? m.lastBreak.gP2 : m.lastBreak.gP1;
-  return rivG > favG; // rival strictly more games after break
+  return rivG > favG;
 }
 
 function checkTennisAlerts(live) {
@@ -254,68 +358,90 @@ function checkTennisAlerts(live) {
     const favName = favIs === 'First Player' ? m.p1 : m.p2;
     const favO    = favIs === 'First Player' ? m.o1  : m.o2;
 
+    // Registrar en simulador
+    const sim = {
+      id: kb, type: 'tennis_break', match: `${m.p1} vs ${m.p2}`,
+      detail: `${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: ${m.lastBreak.gP1}–${m.lastBreak.gP2} · Fav: ${favName}`,
+      alertedAt: nowISO(), resolved: false, outcome: null,
+      _eventId: m.id,
+      _setNum: m.curSetNum,
+      _favIs: favIs,
+      _setsP1atAlert: [...m.sets1],
+      _setsP2atAlert: [...m.sets2],
+    };
+    simAlerts.unshift(sim);
+    if (simAlerts.length > 500) simAlerts.length = 500;
+
     sendTG(
       `🎾 ROTURAS25 — ROTURA\n` +
       `${m.p1} vs ${m.p2}\n` +
       `${m.trn} [${m.cat.toUpperCase()}]\n` +
-      `⚠ ${favName} ROTADO · cuota pre-match: ${favO}x\n` +
+      `⚠ ${favName} ROTADO · cuota pre-match: ${favO != null ? favO + 'x' : 'n/d (partido ya en curso)'}\n` +
       `Set ${m.curSetNum}: ${m.p1} ${m.lastBreak.gP1}–${m.lastBreak.gP2} ${m.p2}\n` +
       `${favName} va PERDIENDO el set\n` +
-      `→ APOSTAR que ${favName} gana el set\n` +
-      `Cuotas: P1=${m.o1 ?? 'n/d'}x  P2=${m.o2 ?? 'n/d'}x`
+      `→ APOSTAR que ${favName} gana el set`
     );
   });
 }
 
+// Resolver alertas de tenis pendientes
+// Sabemos el resultado del set cuando sets1/sets2 tienen una entrada más que en el momento de la alerta
+function resolveTennisSims() {
+  simAlerts.forEach(s => {
+    if (s.resolved || s.type !== 'tennis_break') return;
+    const m = lastTennis.find(x => x.id === s._eventId);
+    if (!m || m.isUp) return;
+
+    // El set se ha cerrado cuando sets1 tiene más entradas que en el momento de la alerta
+    const setsNow = m.sets1.length;
+    const setsAtAlert = s._setsP1atAlert.length;
+
+    if (setsNow > setsAtAlert) {
+      // El set alertado ya terminó: miramos el resultado en el índice correcto
+      const setIdx = s._setNum - 1;
+      const p1Won = m.sets1[setIdx] > m.sets2[setIdx];
+      const favWon = s._favIs === 'First Player' ? p1Won : !p1Won;
+      s.outcome    = favWon ? 'WIN' : 'LOSS';
+      s.resolved   = true;
+      s.resolvedAt = nowISO();
+      console.log(`[SIM] ${s.id} → ${s.outcome} (set ${s._setNum}: P1=${m.sets1[setIdx]} P2=${m.sets2[setIdx]})`);
+
+      // Notificar resultado por Telegram
+      sendTG(
+        `📊 RESULTADO SIMULADOR\n${s.match}\nSet ${s._setNum}: ${m.sets1[setIdx]}–${m.sets2[setIdx]}\nFavorito (${s._favIs === 'First Player' ? s.match.split(' vs ')[0] : s.match.split(' vs ')[1]?.trim()}): ${favWon ? '✅ GANÓ' : '❌ PERDIÓ'} el set`
+      );
+    }
+  });
+}
+
 // ═══════════════════════════════════════════════════════════
-// SMART POLLING — gestión automática de cuota de API
+// POLLING
 // ═══════════════════════════════════════════════════════════
-// Horario de partidos en Europa: ~12:00–23:00 hora España
-// Fuera de ese horario → poll cada 10 min (solo para no perder nada)
-// Durante partidos → poll cada 45s
-// Sin partidos live en horario activo → poll cada 2 min
-//
-// Consumo estimado (AllSportsAPI, 2 llamadas por ciclo de tenis):
-//   Hora pico (45s): 2 × 80 ciclos/hora = 160 req/hora  ← dentro del límite 260
-//   Hora normal (2min): 2 × 30 ciclos = 60 req/hora
-//   Noche (10min): 2 × 6 ciclos = 12 req/hora
-//
-// Football-data.org: 1 llamada/ciclo, límite 10/min → no hay problema
 
 let pollTimeout = null;
 
 async function poll() {
   try {
     stats.pollCount++;
-    const [, live] = await Promise.all([
-      fetchFootball().catch(e => console.error('[FOOTBALL]', e.message)),
-      fetchTennis().catch(e => { console.error('[TENNIS]', e.message); return []; }),
-    ]);
-    if (live) checkTennisAlerts(live);
+    const live = await fetchTennis().catch(e => { console.error('[TENNIS]', e.message); return []; });
+    await fetchFootball().catch(e => console.error('[FOOTBALL]', e.message));
+
+    checkTennisAlerts(live || []);
     checkFootballAlerts();
+    resolveTennisSims();
+    resolveFootballSims();
     lastUpdate = new Date().toISOString();
   } catch(e) {
     stats.errors++;
     console.error('[POLL ERROR]', e.message);
   }
 
-  // Decide next interval
-  // Lógica: hay tenis 24h en todo el mundo, así que solo
-  // bajamos la frecuencia cuando NO hay ningún partido en directo.
-  let delay;
-  if (hasLiveMatches()) {
-    // Hay partidos en juego (fútbol o tenis): cada 45 segundos
-    delay = 45 * 1000;
-  } else {
-    // Sin ningún partido live: cada 3 minutos (ahorra cuota)
-    delay = 3 * 60 * 1000;
-  }
-
+  const delay = hasLiveMatches() ? 45 * 1000 : 3 * 60 * 1000;
   pollTimeout = setTimeout(poll, delay);
 }
 
 // ═══════════════════════════════════════════════════════════
-// HTTP SERVER — la app consulta datos y registra apuestas
+// HTTP SERVER
 // ═══════════════════════════════════════════════════════════
 
 const server = http.createServer((req, res) => {
@@ -324,16 +450,16 @@ const server = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-  const path = new URL(req.url, `http://localhost`).pathname;
+  const path = new URL(req.url, 'http://localhost').pathname;
 
   if (path === '/data') {
-    // Todo en una sola llamada: la app solo necesita esto
     res.writeHead(200);
     res.end(JSON.stringify({
       football: lastFootball,
       tennis:   lastTennis,
       updated:  lastUpdate,
       alerted:  [...alerted],
+      simAlerts: simAlerts.slice(0, 200),
     }));
     return;
   }
@@ -342,14 +468,12 @@ const server = http.createServer((req, res) => {
     res.writeHead(200);
     res.end(JSON.stringify({
       ok: true,
-      football: !!FOOTBALL_KEY,
-      tennis:   !!TENNIS_KEY,
-      telegram: !!TG_TOKEN,
-      updated:  lastUpdate,
-      stats,
+      football: !!FOOTBALL_KEY, tennis: !!TENNIS_KEY, telegram: !!TG_TOKEN,
+      oddMin: ODD_MIN, oddMax: ODD_MAX,
+      updated: lastUpdate, stats,
       liveFootball: lastFootball.filter(m => m.status === 'IN_PLAY' || m.status === 'PAUSED').length,
       liveTennis:   lastTennis.filter(m => !m.isUp).length,
-      nextPollIn:   pollTimeout ? '~calculando' : 'detenido',
+      simCount: simAlerts.length,
     }));
     return;
   }
@@ -359,14 +483,9 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n🎾 Roturas25 SERVER arrancado en puerto ${PORT}`);
-  console.log(`   Football key: ${FOOTBALL_KEY ? '✓' : '✗ FALTA FOOTBALL_KEY'}`);
-  console.log(`   Tennis key:   ${TENNIS_KEY   ? '✓' : '✗ FALTA TENNIS_KEY'}`);
-  console.log(`   Telegram:     ${TG_TOKEN ? '✓' : '✗ FALTA TG_TOKEN'}`);
-  console.log(`   Cuota fav:    ${ODD_MIN}x – ${ODD_MAX}x`);
-  console.log(`   Iniciando primer poll...\n`);
-  // Primer poll inmediato
+  console.log(`\n🎾 Roturas25 SERVER v3 — puerto ${PORT}`);
+  console.log(`   Football: ${FOOTBALL_KEY ? '✓' : '✗'} · Tennis: ${TENNIS_KEY ? '✓' : '✗'} · TG: ${TG_TOKEN ? '✓' : '✗'}`);
+  console.log(`   Cuota fav: ${ODD_MIN}x – ${ODD_MAX}x · Filtro dobles: ON\n`);
   poll();
-  // Enviar mensaje de inicio a Telegram
-  setTimeout(() => sendTG('✅ Roturas25 servidor activo. Monitorizando LaLiga, Premier, ATP, WTA, ITF y Challenger. Las alertas llegarán aquí automáticamente.'), 3000);
+  setTimeout(() => sendTG('✅ Roturas25 v3 activo. Individuales únicamente. Simulador de alertas activado.'), 3000);
 });
