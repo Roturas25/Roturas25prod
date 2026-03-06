@@ -1,0 +1,8 @@
+{
+  "name": "roturas25-server",
+  "version": "1.0.0",
+  "description": "Proxy server for Roturas25",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
