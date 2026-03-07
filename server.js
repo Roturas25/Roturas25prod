@@ -300,29 +300,41 @@ function normT(e) {
 
   const scores = e.scores || [];
   const sets1 = [], sets2 = [];
-  scores.forEach(s => {
+  // FIX: filtrar solo sets terminados — AllSportsAPI puede incluir el set en curso
+  // en scores[] con marcador parcial, lo que haría curSetNum incorrecto.
+  const completedScores = scores.filter(s => {
+    const a = parseInt(s.score_first)  || 0;
+    const b = parseInt(s.score_second) || 0;
+    return (a >= 6 || b >= 6) && (Math.abs(a - b) >= 2 || a >= 7 || b >= 7);
+  });
+  completedScores.forEach(s => {
     sets1.push(parseInt(s.score_first)  || 0);
     sets2.push(parseInt(s.score_second) || 0);
   });
   const gr  = (e.event_game_result || '0 - 0').split(' - ');
   const g1  = (gr[0] || '0').trim();
   const g2  = (gr[1] || '0').trim();
-  const curSetNum = scores.length + 1;
+  const curSetNum = completedScores.length + 1;
 
   const pbp      = e.pointbypoint || [];
   const curGames = pbp.filter(g => g.set_number === 'Set ' + curSetNum);
   let lastBreak  = null;
-  if (curGames.length > 0) {
-    const last = curGames[curGames.length - 1];
-    if (last && last.serve_lost != null && last.serve_lost !== '') {
-      const sp = (last.score || '').split(' - ');
+  // FIX: escanear TODOS los juegos del set actual hacia atrás para encontrar
+  // el último break. Si solo miramos el último juego y fue un hold, perdemos
+  // la rotura que ocurrió en el juego anterior. Buscamos el último juego con
+  // serve_lost distinto de null/vacío.
+  for (let i = curGames.length - 1; i >= 0; i--) {
+    const g = curGames[i];
+    if (g && g.serve_lost != null && g.serve_lost !== '') {
+      const sp = (g.score || '').split(' - ');
       lastBreak = {
-        setLabel: last.set_number,
-        gameNum:  last.number_game,
-        broken:   last.serve_lost,
+        setLabel: g.set_number,
+        gameNum:  String(g.number_game ?? i),
+        broken:   g.serve_lost,
         gP1:      parseInt(sp[0]) || 0,
         gP2:      parseInt(sp[1]) || 0,
       };
+      break;
     }
   }
 
