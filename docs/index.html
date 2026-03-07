@@ -684,7 +684,14 @@ const TG_CHAT = '6307700447';
 const UNIT    = 50;
 
 const DEFAULT_SERVER='https://roturas25prod-production.up.railway.app';
-let SERVER = (localStorage.getItem('r25_srv')||'').trim().replace(/\/$/,'') || DEFAULT_SERVER;
+// Siempre usar DEFAULT_SERVER al arrancar — localStorage solo persiste cambios manuales
+// Esto garantiza que la app conecta aunque haya datos corruptos en localStorage
+let SERVER = DEFAULT_SERVER;
+// Si el usuario configuró manualmente otra URL diferente, respetarla
+const _storedSrv = (localStorage.getItem('r25_srv')||'').trim().replace(/\/$/,'');
+if (_storedSrv && _storedSrv !== DEFAULT_SERVER && _storedSrv.startsWith('http')) {
+  SERVER = _storedSrv;
+}
 let bets    = JSON.parse(ls('r25_bets')    || '[]');
 let alertedSet = new Set(JSON.parse(ls('r25_alerted') || '[]'));
 let fFilter='all', tFilter='all', simFilter='all';
