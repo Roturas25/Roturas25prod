@@ -683,7 +683,8 @@ const TG_TOK  = '8171273424:AAGMvAxhDnt-HSZSZi8DJeV0j6YEwhfHC5E';
 const TG_CHAT = '6307700447';
 const UNIT    = 50;
 
-let SERVER = (localStorage.getItem('r25_srv')||'').replace(/\/$/,'');
+const DEFAULT_SERVER='https://roturas25prod-production.up.railway.app';
+let SERVER = (localStorage.getItem('r25_srv')||'').trim().replace(/\/$/,'') || DEFAULT_SERVER;
 let bets    = JSON.parse(ls('r25_bets')    || '[]');
 let alertedSet = new Set(JSON.parse(ls('r25_alerted') || '[]'));
 let fFilter='all', tFilter='all', simFilter='all';
@@ -712,7 +713,7 @@ function setSrv(s){
 function saveServer(){
   const url=($i('srvIn').value||'').trim().replace(/\/$/,'');
   if(!url){toast('Error','Introduce la URL del servidor.','info');return;}
-  SERVER=url; lss('r25_srv',url);
+  SERVER=url||DEFAULT_SERVER; lss('r25_srv',SERVER);
   $i('srvUrlD').textContent=url; $i('srvUrlD').className='kd set';
   checkServer();
 }
@@ -1629,15 +1630,12 @@ El servidor hace todo el trabajo: polling, detección de alertas, envío a Teleg
 Tú solo abres la app cuando recibes la notificación.`;
 
   // Server
-  if(SERVER){
-    $i('srvUrlD').textContent=SERVER;
-    $i('srvUrlD').className='kd set';
-    $i('srvIn').value=SERVER;
-    checkServer();
-  } else {
-    setSrv('err');
-    $i('setupBanner').style.display='block';
-  }
+  // Siempre iniciar con URL (DEFAULT_SERVER si no hay localStorage)
+  SERVER = SERVER || DEFAULT_SERVER;
+  $i('srvUrlD').textContent=SERVER;
+  $i('srvUrlD').className='kd set';
+  $i('srvIn').value=SERVER;
+  checkServer();
 
   // Migración retroactiva: ITF genérico → ITF-F
   migrateITFBets();
