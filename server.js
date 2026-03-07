@@ -164,8 +164,8 @@ function getMatchOdds(e) {
 // ═══════════════════════════════════════════════════════════
 
 function normF(m, code) {
-  const shF = m.score?.fullTime?.home  ?? 0;
-  const saF = m.score?.fullTime?.away  ?? 0;
+  const shF = m.score?.fullTime?.home  ?? m.score?.home ?? 0;
+  const saF = m.score?.fullTime?.away  ?? m.score?.away ?? 0;
   const shH = m.score?.halfTime?.home  ?? null;
   const saH = m.score?.halfTime?.away  ?? null;
 
@@ -242,23 +242,31 @@ async function fetchFootball() {
 function checkFootballAlerts() {
   lastFootball.forEach(m => {
     if (m.status !== 'IN_PLAY') return;
-    // NOTA: football-data.org plan gratuito no devuelve marcador en tiempo real.
-    // El minuto se calcula desde utcDate como proxy. Ventana amplia para no perder la alerta.
+    // Una sola alerta por mitad. Genera 2 simAlerts:
+    //   _05 → +0.5 goles (stake nominal 50€) WIN si ≥1 gol
+    //   _15 → +1.5 goles (stake nominal 25€) WIN si ≥2 goles
 
-    // Alerta 1ª parte: entre min.22 y min.38 (ventana amplia para cubrir imprecisión)
+    // ─── 1ª parte: min.22–38 ────────────────────────────────
+    // lhH/laH son halfTime goals — durante el partido en curso son null.
+    // lh/la son fullTime goals — también null durante 1ªP en plan gratuito.
+    // Heurística: si la API devuelve goles en este momento, no alertar.
+    const goals1h = (m.lhH != null ? (m.lhH + m.laH) : null);  // null = sin info
     const k25 = '25_' + m.id;
-    if (m.min >= 22 && m.min <= 38 && !alerted.has(k25)) {
+    // Solo alertar si NO sabemos que hay gol en 1ªP (null = sin info → alertar)
+    const skip25 = goals1h != null && goals1h > 0;
+    if (m.min >= 22 && m.min <= 38 && !alerted.has(k25) && !skip25) {
       alerted.add(k25);
-      const sim = {
-        id: k25, type: 'football_ht', match: `${m.h} vs ${m.a}`,
-        detail: `${m.league} · ~Min.${m.min} · Sin gol confirmado → Gol 1ª parte`,
-        alertedAt: nowISO(), resolved: false, outcome: null,
-        _matchId: m.id.replace('fd_',''), _resolveOn: 'ht_goal',
-      };
-      simAlerts.unshift(sim);
+      simAlerts.unshift({ id: k25+'_05', type:'football_ht_05', match:`${m.h} vs ${m.a}`,
+        detail:`${m.league} · ~Min.${m.min} · 1ªP +0.5 goles (50€)`,
+        alertedAt:nowISO(), resolved:false, outcome:null,
+        _matchId:m.id.replace('fd_',''), _resolveOn:'ht_goal', _market:'+0.5', _nominalStake:50, _league:m.league, _half:1 });
+      simAlerts.unshift({ id: k25+'_15', type:'football_ht_15', match:`${m.h} vs ${m.a}`,
+        detail:`${m.league} · ~Min.${m.min} · 1ªP +1.5 goles (25€)`,
+        alertedAt:nowISO(), resolved:false, outcome:null,
+        _matchId:m.id.replace('fd_',''), _resolveOn:'ht_goal_15', _market:'+1.5', _nominalStake:25, _league:m.league, _half:1 });
       if (simAlerts.length > 500) simAlerts.length = 500;
       sendTG(
-        `⚽ ROTURAS25 — FÚTBOL ALERTA
+        `⚽ ROTURAS25 — FÚTBOL 1ª PARTE
 ` +
         `━━━━━━━━━━━━━━━━━━━━
 ` +
@@ -268,26 +276,42 @@ function checkFootballAlerts() {
 ` +
         `━━━━━━━━━━━━━━━━━━━━
 ` +
-        `⏱ ~Min.${m.min} · 1ª PARTE
+        `⏱ ~Min.${m.min}
 ` +
-        `→ APOSTAR: Gol en 1ª parte`
+        `→ APUESTA 1: +0.5 goles 1ªP · 50€
+` +
+        `→ APUESTA 2: +1.5 goles 1ªP · 25€`
       );
     }
 
-    // Alerta 2ª parte: entre min.63 y min.78
+    // ─── 2ª parte: min.63–78 ────────────────────────────────
+    // Guardar snapshot del marcador al inicio de 2ªP (cuando el partido
+    // vuelve a IN_PLAY tras el descanso) para detectar si ya hubo gol.
+    if (m.min >= 46 && m.min <= 50 && m.lhH != null && !htSnapshot.has(m.id)) {
+      htSnapshot.set(m.id, { h: m.lhH, a: m.laH });
+      console.log(`[HT SNAP] ${m.h} vs ${m.a} → HT: ${m.lhH}-${m.laH}`);
+    }
+
     const k67 = '67_' + m.id;
-    if (m.min >= 63 && m.min <= 78 && !alerted.has(k67)) {
+    // Verificar goles en 2ªP: comparar marcador actual con snapshot HT
+    // Si no hay snapshot (API no lo dio), asumimos sin gol (preferible a no alertar)
+    const snap = htSnapshot.get(m.id);
+    const goals2h = snap != null
+      ? Math.max(0, (m.lh - snap.h) + (m.la - snap.a))   // goles desde el descanso
+      : 0;  // sin info → asumir 0 para no perder la alerta
+    if (m.min >= 63 && m.min <= 78 && !alerted.has(k67) && goals2h === 0) {
       alerted.add(k67);
-      const sim = {
-        id: k67, type: 'football_2h', match: `${m.h} vs ${m.a}`,
-        detail: `${m.league} · ~Min.${m.min} · Sin gol en 2ª parte → Gol 2ª parte`,
-        alertedAt: nowISO(), resolved: false, outcome: null,
-        _matchId: m.id.replace('fd_',''), _resolveOn: 'sh_goal',
-      };
-      simAlerts.unshift(sim);
+      simAlerts.unshift({ id: k67+'_05', type:'football_2h_05', match:`${m.h} vs ${m.a}`,
+        detail:`${m.league} · ~Min.${m.min} · 2ªP +0.5 goles (50€)`,
+        alertedAt:nowISO(), resolved:false, outcome:null,
+        _matchId:m.id.replace('fd_',''), _resolveOn:'sh_goal', _market:'+0.5', _nominalStake:50, _league:m.league, _half:2 });
+      simAlerts.unshift({ id: k67+'_15', type:'football_2h_15', match:`${m.h} vs ${m.a}`,
+        detail:`${m.league} · ~Min.${m.min} · 2ªP +1.5 goles (25€)`,
+        alertedAt:nowISO(), resolved:false, outcome:null,
+        _matchId:m.id.replace('fd_',''), _resolveOn:'sh_goal_15', _market:'+1.5', _nominalStake:25, _league:m.league, _half:2 });
       if (simAlerts.length > 500) simAlerts.length = 500;
       sendTG(
-        `⚽ ROTURAS25 — FÚTBOL ALERTA
+        `⚽ ROTURAS25 — FÚTBOL 2ª PARTE
 ` +
         `━━━━━━━━━━━━━━━━━━━━
 ` +
@@ -297,9 +321,11 @@ function checkFootballAlerts() {
 ` +
         `━━━━━━━━━━━━━━━━━━━━
 ` +
-        `⏱ ~Min.${m.min} · 2ª PARTE
+        `⏱ ~Min.${m.min}
 ` +
-        `→ APOSTAR: Gol en 2ª parte`
+        `→ APUESTA 1: +0.5 goles 2ªP · 50€
+` +
+        `→ APUESTA 2: +1.5 goles 2ªP · 25€`
       );
     }
   });
@@ -311,14 +337,26 @@ function resolveFootballSims() {
     const m = allFootballForSim.find(x => x.id === 'fd_' + s._matchId);
     if (!m) return;
 
+    // 1ª parte +0.5: WIN si ≥1 gol al descanso
     if (s._resolveOn === 'ht_goal' && (m.status === 'PAUSED' || m.status === 'FINISHED' || (m.status === 'IN_PLAY' && m.min > 45))) {
       const goalsAtHT = (m.lhH || 0) + (m.laH || 0);
-      s.outcome = goalsAtHT > 0 ? 'WIN' : 'LOSS';
+      s.outcome = goalsAtHT >= 1 ? 'WIN' : 'LOSS';
       s.resolved = true; s.resolvedAt = nowISO();
     }
-
+    // 1ª parte +1.5: WIN si ≥2 goles al descanso
+    if (s._resolveOn === 'ht_goal_15' && (m.status === 'PAUSED' || m.status === 'FINISHED' || (m.status === 'IN_PLAY' && m.min > 45))) {
+      const goalsAtHT = (m.lhH || 0) + (m.laH || 0);
+      s.outcome = goalsAtHT >= 2 ? 'WIN' : 'LOSS';
+      s.resolved = true; s.resolvedAt = nowISO();
+    }
+    // 2ª parte +0.5: WIN si ≥1 gol en 2ªP
     if (s._resolveOn === 'sh_goal' && m.status === 'FINISHED') {
-      s.outcome = m.g2 > 0 ? 'WIN' : 'LOSS';
+      s.outcome = m.g2 >= 1 ? 'WIN' : 'LOSS';
+      s.resolved = true; s.resolvedAt = nowISO();
+    }
+    // 2ª parte +1.5: WIN si ≥2 goles en 2ªP
+    if (s._resolveOn === 'sh_goal_15' && m.status === 'FINISHED') {
+      s.outcome = m.g2 >= 2 ? 'WIN' : 'LOSS';
       s.resolved = true; s.resolvedAt = nowISO();
     }
   });
@@ -492,6 +530,11 @@ function isBreakAlert(m) {
   // rivG > favG: el rival lleva más juegos → el fav va perdiendo el set
   return rivG > favG;
 }
+
+// ─── Snapshot de marcador al descanso (para detectar goles en 2ªP) ──────────────
+// Clave: matchId → { h: golesLocal, a: golesVisitante }
+// Se guarda cuando el partido pasa a PAUSED o vuelve de PAUSED (IN_PLAY 2ªP)
+const htSnapshot = new Map();
 
 // ─── Rastreo de recuperaciones de break por partido+set ───────────────────────
 // Estructura: breakRecoveries[matchId_setNum] = { alerted, favIs, broken_gameNum }
@@ -839,6 +882,14 @@ const server = http.createServer((req, res) => {
 
   if (path === '/data') {
     // Calcular stats por banda de cuota (solo registros resueltos tennis_break)
+    // Stats de fútbol separadas por mercado
+    const ftStats = { ht_05:{alerts:0,wins:0,losses:0}, ht_15:{alerts:0,wins:0,losses:0}, '2h_05':{alerts:0,wins:0,losses:0}, '2h_15':{alerts:0,wins:0,losses:0} };
+    simAlerts.forEach(s => {
+      if (s.resolved) {
+        const k = s.type==='football_ht_05'?'ht_05':s.type==='football_ht_15'?'ht_15':s.type==='football_2h_05'?'2h_05':s.type==='football_2h_15'?'2h_15':null;
+        if (k) { ftStats[k].alerts++; if(s.outcome==='WIN')ftStats[k].wins++; if(s.outcome==='LOSS')ftStats[k].losses++; }
+      }
+    });
     const bands = ['1.20-1.30','1.30-1.40','1.40-1.50','1.50-1.60'];
     const oddStats = {};
     bands.forEach(b => { oddStats[b] = { alerts:0, wins:0, losses:0, recoveries:0 }; });
@@ -879,7 +930,7 @@ const server = http.createServer((req, res) => {
       updated:   lastUpdate,
       alerted:   [...alerted],
       simAlerts: simAlerts.slice(0, 200),
-      oddStats, catStats,
+      oddStats, catStats, ftStats,
     }));
     return;
   }
@@ -903,10 +954,55 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
+// ═══════════════════════════════════════════════════════════
+// AUTO-PUSH A GITHUB (se ejecuta al arrancar Railway)
+// Cuando Railway redeploya desde GitHub, server.js ya está actualizado.
+// Este bloque solo sirve para confirmar el deploy con un commit de estado.
+// ═══════════════════════════════════════════════════════════
+const GH_TOKEN = process.env.GH_TOKEN || '';
+const GH_REPO  = process.env.GH_REPO  || 'Roturas25/Roturas25prod';
+
+async function pushStatusToGH() {
+  if (!GH_TOKEN) return;
+  // Update a status file so we can see last deploy time in the repo
+  const ts = new Date().toISOString();
+  const content = Buffer.from(JSON.stringify({ lastDeploy: ts, version: 'v4' })).toString('base64');
+  try {
+    // Get current SHA of status.json if exists
+    const existing = await fetchJson(
+      `https://api.github.com/repos/${GH_REPO}/contents/status.json`,
+      { 'Authorization': `token ${GH_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' }
+    ).catch(() => null);
+    const sha = existing?.sha || undefined;
+    const body = JSON.stringify({ message: `🤖 Deploy ${ts}`, content, ...(sha ? { sha } : {}) });
+    await new Promise((res, rej) => {
+      const bodyBuf = Buffer.from(body);
+      const req = https.request({
+        hostname: 'api.github.com',
+        path: `/repos/${GH_REPO}/contents/status.json`,
+        method: 'PUT',
+        headers: {
+          'Authorization': `token ${GH_TOKEN}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+          'Content-Length': bodyBuf.length,
+          'User-Agent': 'Roturas25-Server'
+        }
+      }, r => { r.resume(); r.on('end', res); });
+      req.on('error', rej);
+      req.write(bodyBuf); req.end();
+    });
+    console.log('[GH] Status push OK →', ts);
+  } catch(e) {
+    console.warn('[GH] Status push failed:', e.message);
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`\n🎾 Roturas25 SERVER v4 — puerto ${PORT}`);
   console.log(`   Football: ${FOOTBALL_KEY ? '✓' : '✗'} · Tennis: ${TENNIS_KEY ? '✓' : '✗'} · TG: ${TG_TOKEN ? '✓' : '✗'}`);
   console.log(`   Cuota fav: ${ODD_MIN}x – ${ODD_MAX}x · Filtro dobles: ON · Odds: met=Odds endpoint\n`);
   poll();
+  setTimeout(pushStatusToGH, 5000);
   setTimeout(() => sendTG('✅ Roturas25 v4 activo. Cuotas via met=Odds (pre-partido real). Solo partidos monitorizados.'), 3000);
 });
