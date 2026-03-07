@@ -215,7 +215,7 @@ function normT(e){
       break;
     }
   }
-  const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2!=ODD_MAX);
+  const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
   return{id:'td_'+e.event_key,_key:String(e.event_key),cat,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
