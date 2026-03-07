@@ -407,10 +407,32 @@ function isBreakAlert(m) {
   if (m.o1 != null && m.o1 >= ODD_MIN && m.o1 <= ODD_MAX)      favIs = 'First Player';
   else if (m.o2 != null && m.o2 >= ODD_MIN && m.o2 <= ODD_MAX) favIs = 'Second Player';
   else return false;
-  if (m.lastBreak.broken !== favIs) return false;
-  const favG = favIs === 'First Player' ? m.lastBreak.gP1 : m.lastBreak.gP2;
-  const rivG = favIs === 'First Player' ? m.lastBreak.gP2 : m.lastBreak.gP1;
-  return rivG > favG;
+  // El favorito fue rotado (perdió el saque)
+  // No comprobamos el marcador: el score en pbp live puede ser el del juego anterior
+  // aún sin actualizar, por lo que rivG > favG puede fallar aunque el break sea real.
+  // La key única por juego (setLabel+gameNum) evita alertas duplicadas.
+  return m.lastBreak.broken === favIs;
+}
+
+function checkMonitoredMatchStart() {
+  // Alerta cuando un partido monitorizado pasa de upcoming a live
+  lastTennis.filter(m => !m.isUp && m.mon).forEach(m => {
+    const ks = `start_${m.id}`;
+    if (alerted.has(ks)) return;
+    alerted.add(ks);
+    const favIs   = (m.o1 != null && m.o1 >= ODD_MIN && m.o1 <= ODD_MAX) ? 'First Player' : 'Second Player';
+    const favName = favIs === 'First Player' ? m.p1 : m.p2;
+    const favO    = favIs === 'First Player' ? m.o1  : m.o2;
+    sendTG(
+      `🎾 PARTIDO INICIADO — MONITORIZADO\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `${m.p1} vs ${m.p2}\n` +
+      `📍 ${m.trn} [${m.cat.toUpperCase()}]\n` +
+      `⭐ FAV: ${favName} @ ${favO != null ? favO + 'x' : 'n/d'}\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `→ Monitorizando roturas de saque`
+    );
+  });
 }
 
 function checkTennisAlerts(live) {
@@ -487,6 +509,7 @@ async function poll() {
     await fetchFootball().catch(e => console.error('[FOOTBALL]', e.message));
 
     checkTennisAlerts(live || []);
+    checkMonitoredMatchStart();
     checkFootballAlerts();
     resolveTennisSims();
     resolveFootballSims();
