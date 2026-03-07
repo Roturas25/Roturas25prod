@@ -189,10 +189,23 @@ function normT(e){
   const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
   const sets1=cs.map(s=>parseInt(s.score_first)||0), sets2=cs.map(s=>parseInt(s.score_second)||0);
   const curSetNum=cs.length+1;
+  // Juegos del set actual — con fallback al último juego del pbp
   const cr1=parseInt(e.event_first_player_score_current_set), cr2=parseInt(e.event_second_player_score_current_set);
-  const g1=String(!isNaN(cr1)?cr1:0), g2=String(!isNaN(cr2)?cr2:0);
+  let g1=String(!isNaN(cr1)?cr1:0), g2=String(!isNaN(cr2)?cr2:0);
   const pbp=e.pointbypoint||[];
   const curGames=pbp.filter(g=>g.set_number==='Set '+curSetNum);
+  // Fallback: si API no da current_set, derivarlo del score del último juego del pbp
+  if(g1==='0'&&g2==='0'&&curGames.length>0){
+    const lastPbp=curGames[curGames.length-1];
+    if(lastPbp&&lastPbp.score){const sp=(lastPbp.score||'').split(' - ');if(sp.length===2){g1=(sp[0]||'0').trim();g2=(sp[1]||'0').trim();}}
+  }
+  // Puntos del juego en curso: event_game_result = "40 - 15" / "AD - 40" / "0 - 0"
+  const rawPt=(e.event_game_result||'').trim();
+  let pt1='',pt2='';
+  if(rawPt&&rawPt!=='0 - 0'&&rawPt!=='-'){
+    const spt=rawPt.split(' - ');
+    if(spt.length===2){pt1=spt[0].trim();pt2=spt[1].trim();}
+  }
   let lastBreak=null;
   for(let i=curGames.length-1;i>=0;i--){
     const g=curGames[i];
@@ -202,10 +215,10 @@ function normT(e){
       break;
     }
   }
-  const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
+  const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2!=ODD_MAX);
   return{id:'td_'+e.event_key,_key:String(e.event_key),cat,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
-    o1,o2,sets1,sets2,g1,g2,srv:e.event_serve==='First Player'?1:2,
+    o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
     curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2};
 }
 function normTUp(e){
