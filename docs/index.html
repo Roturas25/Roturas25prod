@@ -684,14 +684,10 @@ const TG_CHAT = '6307700447';
 const UNIT    = 50;
 
 const DEFAULT_SERVER='https://roturas25prod-production.up.railway.app';
-// Siempre usar DEFAULT_SERVER al arrancar — localStorage solo persiste cambios manuales
-// Esto garantiza que la app conecta aunque haya datos corruptos en localStorage
+// SIEMPRE usar DEFAULT_SERVER — ignorar localStorage completamente al inicio
+// El servidor está fijo, no hay necesidad de configuración manual
 let SERVER = DEFAULT_SERVER;
-// Si el usuario configuró manualmente otra URL diferente, respetarla
-const _storedSrv = (localStorage.getItem('r25_srv')||'').trim().replace(/\/$/,'');
-if (_storedSrv && _storedSrv !== DEFAULT_SERVER && _storedSrv.startsWith('http')) {
-  SERVER = _storedSrv;
-}
+localStorage.setItem('r25_srv', DEFAULT_SERVER); // limpiar cualquier valor residual
 let bets    = JSON.parse(ls('r25_bets')    || '[]');
 let alertedSet = new Set(JSON.parse(ls('r25_alerted') || '[]'));
 let fFilter='all', tFilter='all', simFilter='all';
@@ -742,8 +738,9 @@ async function checkServer(){
     fetchData();
   }catch(e){
     srvOk=false; setSrv('err');
-    $i('srvStatus').textContent='Error: '+e.message;
-    $i('setupBanner').style.display='block';
+    $i('srvStatus').textContent='Error: '+e.message+' — reintentando en 10s...';
+    console.warn('[SERVER] fetch falló:', e.message, '— retry en 10s');
+    setTimeout(checkServer, 10000);
   }
 }
 
@@ -1637,14 +1634,11 @@ El servidor hace todo el trabajo: polling, detección de alertas, envío a Teleg
 Tú solo abres la app cuando recibes la notificación.`;
 
   // Server
-  // Inicializar SERVER - siempre con la URL correcta
-  if (!SERVER || SERVER === '' || SERVER === 'undefined') {
-    SERVER = DEFAULT_SERVER;
-    localStorage.setItem('r25_srv', SERVER);
-  }
+  // URL ya configurada al inicio del script con DEFAULT_SERVER
   $i('srvUrlD').textContent = SERVER;
   $i('srvUrlD').className = 'kd set';
   $i('srvIn').value = SERVER;
+  console.log('[INIT] Conectando a:', SERVER);
   checkServer();
 
   // Migración retroactiva: ITF genérico → ITF-F
