@@ -2,7 +2,12 @@ const http  = require('http');
 const https = require('https');
 
 // ═══════════════════════════════════════════════════════════
-// ROTURAS25 — SERVIDOR AUTÓNOMO v4
+// ROTURAS25 — SERVIDOR AUTÓNOMO v5
+// ═══════════════════════════════════════════════════════════
+
+// Evitar crash loop: capturar errores no manejados
+process.on('uncaughtException',  e => console.error('[UNCAUGHT]', e.message, e.stack));
+process.on('unhandledRejection', e => console.error('[UNHANDLED]', e));
 // ═══════════════════════════════════════════════════════════
 
 const FOOTBALL_KEY = process.env.FOOTBALL_KEY || '';
@@ -1049,6 +1054,13 @@ server.listen(PORT, () => {
   console.log(`   Football: ${FOOTBALL_KEY ? '✓' : '✗'} · Tennis: ${TENNIS_KEY ? '✓' : '✗'} · TG: ${TG_TOKEN ? '✓' : '✗'}`);
   console.log(`   Cuota fav: ${ODD_MIN}x – ${ODD_MAX}x · Filtro dobles: ON · Odds: met=Odds endpoint\n`);
   poll();
-  setTimeout(pushStatusToGH, 5000);
-  setTimeout(() => sendTG('✅ Roturas25 v4 activo. Cuotas via met=Odds (pre-partido real). Solo partidos monitorizados.'), 3000);
+  setTimeout(pushStatusToGH, 8000);
+  // Mensaje de inicio — solo 1 por deploy real (no en crash loops)
+  // Throttle: no enviar si hay otro mensaje en los últimos 5 min
+  setTimeout(async () => {
+    try {
+      const startMsg = `✅ Roturas25 v5 activo\n⏱ ${new Date().toLocaleString('es-ES', {timeZone:'Europe/Madrid'})}`;
+      await sendTG(startMsg);
+    } catch(e) { console.warn('[STARTUP TG]', e.message); }
+  }, 4000);
 });
