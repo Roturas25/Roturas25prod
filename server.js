@@ -215,6 +215,7 @@ function normF(m, code) {
     hc: m.homeTeam?.crest || null,
     ac: m.awayTeam?.crest || null,
     lh: shF, la: saF,
+    lhLive: shF,  laLive: saF,  // marcador más actualizado disponible
     lhH: shH, laH: saH,   // marcador al descanso
     g2,
     utcDate: m.utcDate,
@@ -247,13 +248,21 @@ function checkFootballAlerts() {
     //   _15 → +1.5 goles (stake nominal 25€) WIN si ≥2 goles
 
     // ─── 1ª parte: min.22–38 ────────────────────────────────
-    // lhH/laH son halfTime goals — durante el partido en curso son null.
-    // lh/la son fullTime goals — también null durante 1ªP en plan gratuito.
-    // Heurística: si la API devuelve goles en este momento, no alertar.
-    const goals1h = (m.lhH != null ? (m.lhH + m.laH) : null);  // null = sin info
+    // Guardar snapshot al inicio del partido (min 1-8) para detectar cambios
+    if (m.min >= 1 && m.min <= 8 && !kickoffSnapshot.has(m.id)) {
+      kickoffSnapshot.set(m.id, { h: m.lhLive || 0, a: m.laLive || 0 });
+    }
+
+    // Detectar goles en 1ªP:
+    // Método 1: la API devuelve score > 0 directamente (shF/saF)
+    // Método 2: el marcador ha aumentado vs el snapshot inicial
+    const liveGoals1h = (m.lhLive || 0) + (m.laLive || 0);
+    const snap0 = kickoffSnapshot.get(m.id);
+    const goalsVsKickoff = snap0 ? (liveGoals1h - snap0.h - snap0.a) : 0;
+    const knownGoals1h = Math.max(liveGoals1h, goalsVsKickoff);
+    const skip25 = knownGoals1h > 0;
+
     const k25 = '25_' + m.id;
-    // Solo alertar si NO sabemos que hay gol en 1ªP (null = sin info → alertar)
-    const skip25 = goals1h != null && goals1h > 0;
     if (m.min >= 22 && m.min <= 38 && !alerted.has(k25) && !skip25) {
       alerted.add(k25);
       simAlerts.unshift({ id: k25+'_05', type:'football_ht_05', match:`${m.h} vs ${m.a}`,
@@ -297,7 +306,7 @@ function checkFootballAlerts() {
     // Si no hay snapshot (API no lo dio), asumimos sin gol (preferible a no alertar)
     const snap = htSnapshot.get(m.id);
     const goals2h = snap != null
-      ? Math.max(0, (m.lh - snap.h) + (m.la - snap.a))   // goles desde el descanso
+      ? Math.max(0, ((m.lhLive||0) - snap.h) + ((m.laLive||0) - snap.a))  // goles desde el descanso
       : 0;  // sin info → asumir 0 para no perder la alerta
     if (m.min >= 63 && m.min <= 78 && !alerted.has(k67) && goals2h === 0) {
       alerted.add(k67);
@@ -532,9 +541,11 @@ function isBreakAlert(m) {
 }
 
 // ─── Snapshot de marcador al descanso (para detectar goles en 2ªP) ──────────────
-// Clave: matchId → { h: golesLocal, a: golesVisitante }
-// Se guarda cuando el partido pasa a PAUSED o vuelve de PAUSED (IN_PLAY 2ªP)
+// htSnapshot: matchId → { h, a } guardado cuando vuelve de PAUSED (inicio 2ªP)
 const htSnapshot = new Map();
+// kickoffSnapshot: matchId → { h, a } guardado en los primeros minutos
+// Si la API devuelve goles después, sabemos que ha habido gol en 1ªP
+const kickoffSnapshot = new Map();
 
 // ─── Rastreo de recuperaciones de break por partido+set ───────────────────────
 // Estructura: breakRecoveries[matchId_setNum] = { alerted, favIs, broken_gameNum }
@@ -935,6 +946,30 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ── /admin/push — recibe server.js o docs/index.html y hace push a GitHub ──
+  if (path === '/admin/push' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => { body += d; if (body.length > 5 * 1024 * 1024) req.destroy(); });
+    req.on('end', async () => {
+      try {
+        const { secret, file, content: fileContent } = JSON.parse(body);
+        const DEPLOY_SECRET = process.env.DEPLOY_SECRET || 'roturas25deploy';
+        if (secret !== DEPLOY_SECRET) { res.writeHead(403); res.end(JSON.stringify({ error: 'Forbidden' })); return; }
+        if (!file || !fileContent) { res.writeHead(400); res.end(JSON.stringify({ error: 'file and content required' })); return; }
+        // Allowed files only
+        const allowed = ['server.js', 'docs/index.html', 'package.json'];
+        if (!allowed.includes(file)) { res.writeHead(400); res.end(JSON.stringify({ error: 'file not allowed' })); return; }
+        await ghUpsertFile(file, fileContent, `🚀 Auto-deploy ${file} — ${new Date().toISOString()}`);
+        res.writeHead(200); res.end(JSON.stringify({ ok: true, file, pushed: true }));
+        console.log('[DEPLOY] Pushed', file, 'to GitHub');
+      } catch(e) {
+        console.error('[DEPLOY ERROR]', e.message);
+        res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
   if (path === '/health') {
     res.writeHead(200);
     res.end(JSON.stringify({
@@ -955,43 +990,54 @@ const server = http.createServer((req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// GITHUB PUSH HELPER — usado por /admin/push y pushStatusToGH
+// ═══════════════════════════════════════════════════════════
+async function ghUpsertFile(repoPath, contentStr, commitMsg) {
+  const GH_TOKEN = process.env.GH_TOKEN || '';
+  const GH_REPO  = process.env.GH_REPO  || 'Roturas25/Roturas25prod';
+  if (!GH_TOKEN) throw new Error('GH_TOKEN no configurado en Railway');
+
+  const base64Content = Buffer.from(contentStr).toString('base64');
+
+  // Obtener SHA actual del archivo (si existe)
+  let sha;
+  try {
+    const existing = await fetchJson(
+      `https://api.github.com/repos/${GH_REPO}/contents/${repoPath}`,
+      { 'Authorization': `token ${GH_TOKEN}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'Roturas25' }
+    );
+    sha = existing?.sha;
+  } catch(e) { /* archivo nuevo */ }
+
+  const body = JSON.stringify({ message: commitMsg, content: base64Content, ...(sha ? { sha } : {}) });
+  await new Promise((res, rej) => {
+    const buf = Buffer.from(body);
+    const req = https.request({
+      hostname: 'api.github.com',
+      path: `/repos/${GH_REPO}/contents/${repoPath}`,
+      method: 'PUT',
+      headers: {
+        'Authorization': `token ${GH_TOKEN}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+        'Content-Length': buf.length,
+        'User-Agent': 'Roturas25-Server'
+      }
+    }, r => { r.resume(); r.on('end', res); });
+    req.on('error', rej);
+    req.write(buf); req.end();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
 // AUTO-PUSH A GITHUB (se ejecuta al arrancar Railway)
 // Cuando Railway redeploya desde GitHub, server.js ya está actualizado.
 // Este bloque solo sirve para confirmar el deploy con un commit de estado.
 // ═══════════════════════════════════════════════════════════
-const GH_TOKEN = process.env.GH_TOKEN || '';
-const GH_REPO  = process.env.GH_REPO  || 'Roturas25/Roturas25prod';
-
 async function pushStatusToGH() {
-  if (!GH_TOKEN) return;
-  // Update a status file so we can see last deploy time in the repo
-  const ts = new Date().toISOString();
-  const content = Buffer.from(JSON.stringify({ lastDeploy: ts, version: 'v4' })).toString('base64');
   try {
-    // Get current SHA of status.json if exists
-    const existing = await fetchJson(
-      `https://api.github.com/repos/${GH_REPO}/contents/status.json`,
-      { 'Authorization': `token ${GH_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' }
-    ).catch(() => null);
-    const sha = existing?.sha || undefined;
-    const body = JSON.stringify({ message: `🤖 Deploy ${ts}`, content, ...(sha ? { sha } : {}) });
-    await new Promise((res, rej) => {
-      const bodyBuf = Buffer.from(body);
-      const req = https.request({
-        hostname: 'api.github.com',
-        path: `/repos/${GH_REPO}/contents/status.json`,
-        method: 'PUT',
-        headers: {
-          'Authorization': `token ${GH_TOKEN}`,
-          'Accept': 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-          'Content-Length': bodyBuf.length,
-          'User-Agent': 'Roturas25-Server'
-        }
-      }, r => { r.resume(); r.on('end', res); });
-      req.on('error', rej);
-      req.write(bodyBuf); req.end();
-    });
+    const ts = new Date().toISOString();
+    await ghUpsertFile('status.json', JSON.stringify({ lastDeploy: ts, version: 'v5' }), `🤖 Deploy ${ts}`);
     console.log('[GH] Status push OK →', ts);
   } catch(e) {
     console.warn('[GH] Status push failed:', e.message);
