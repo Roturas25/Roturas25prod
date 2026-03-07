@@ -390,7 +390,7 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
   <div class="sc" style="margin-bottom:12px"><div class="sch">⚙ Cuotas estimadas para backtest</div><div class="scb">
     <div class="cfg2" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
       <div class="cfgbox"><div class="cfglbl">+0.5g 1ªP/2ªP</div><div class="cfgv"><input type="number" id="bt_ft05" value="1.80" step="0.01" min="1.01"></div></div>
-      <div class="cfgbox"><div class="cfglbl">+1.5g 1ªP/2ªP</div><div class="cfgv"><input type="number" id="bt_ft15" value="4.00" step="0.01" min="1.01"></div></div>
+      <div class="cfgbox"><div class="cfglbl">+1.5g 1ªP/2ªP</div><div class="cfgv"><input type="number" id="bt_ft15" value="3.00" step="0.01" min="1.01"></div></div>
       <div class="cfgbox"><div class="cfglbl">Rotura tenis</div><div class="cfgv"><input type="number" id="bt_brk" value="2.10" step="0.01" min="1.01"></div></div>
       <div class="cfgbox"><div class="cfglbl">S1→Gana S2</div><div class="cfgv"><input type="number" id="bt_s2" value="1.65" step="0.01" min="1.01"></div></div>
       <div class="cfgbox"><div class="cfglbl">S1→Gana ptdo</div><div class="cfgv"><input type="number" id="bt_sm" value="2.20" step="0.01" min="1.01"></div></div>
@@ -938,8 +938,8 @@ function fCardHtml(m){
     +'</div>';
   const g2i=iL&&m.min>45?'<div class="fc-g2">Goles 2ªP: '+m.g2+'</div>':'';
   const fid=ee(m.h+' vs '+m.a);
-  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@4.00x)</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1)">📝 Registrar 2 apuestas</button></div>':'';
-  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@4.00x)</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2)">📝 Registrar 2 apuestas</button></div>':''
+  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1)">📝 Registrar 2 apuestas</button></div>':'';
+  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2)">📝 Registrar 2 apuestas</button></div>':''
   return '<div class="card '+cls+'"><div class="fc-in"><div class="fc-time">'+th+tb+'</div><div><div class="fc-lg">'+m.league+'</div>'+teams+g2i+'</div></div>'+a25+a67+'</div>';
 }
 
@@ -1194,10 +1194,10 @@ function openFBotBet(matchName, half){
   bets.unshift({id:Date.now(), match:matchName, odds:1.80, stake:50, type:type05,
     outcome:'pending', profit:0, date:dateStr, _simId:simId05, _alertKey:alertKey});
   // Apuesta +1.5 goles  
-  bets.unshift({id:Date.now()+1, match:matchName, odds:4.00, stake:25, type:type15,
+  bets.unshift({id:Date.now()+1, match:matchName, odds:3.00, stake:25, type:type15,
     outcome:'pending', profit:0, date:dateStr, _simId:simId15, _alertKey:alertKey});
   lss('r25_bets',bets); pushFB(); renderLog(); updateStats();
-  toast('✅ Apuestas registradas', matchName+' — +0.5 @1.80x (50€) y +1.5 @4.00x (25€)');
+  toast('✅ Apuestas registradas', matchName+' — +0.5 @1.80x (50€) y +1.5 @3.00x (25€)');
   renderAll(); // refresca para quitar el botón
 }
 
@@ -1316,7 +1316,7 @@ const BT_VERSION = 1;
 function btOdds() {
   return {
     ft05:  parseFloat($i('bt_ft05')?.value  || '1.80'),
-    ft15:  parseFloat($i('bt_ft15')?.value  || '4.00'),
+    ft15:  parseFloat($i('bt_ft15')?.value  || '3.00'),
     brk:   parseFloat($i('bt_brk')?.value   || '2.10'),
     s2:    parseFloat($i('bt_s2')?.value    || '1.65'),
     sm:    parseFloat($i('bt_sm')?.value    || '2.20'),
@@ -1336,6 +1336,8 @@ function simTypeToBTOdds(type, o) {
 // Llamar cada vez que llegan nuevos simAlerts del servidor
 function syncBTFromSims(sims) {
   if (!sims || !sims.length) return;
+  // Migración retroactiva: corregir cuotas antiguas en btData existente
+  _migrateBTOdds();
   const o = btOdds();
   let changed = false;
 
@@ -1385,6 +1387,31 @@ function syncBTFromSims(sims) {
     lss('r25_bt', btData);
     if ($i('page-bt')?.classList.contains('active')) renderBT();
   }
+}
+
+// Migración retroactiva: actualiza cuotas antiguas a los valores correctos
+// Se ejecuta automáticamente en cada carga para garantizar consistencia
+let _btMigrated = false;
+function _migrateBTOdds() {
+  if (_btMigrated) return;
+  _btMigrated = true;
+  const CORRECT = { ft05:1.80, ft15:3.00, brk:2.10, s2:1.65, sm:2.20 };
+  let changed = false;
+  btData.forEach(b => {
+    let target = null;
+    if (b.type==='football_ht_05'||b.type==='football_2h_05') target=CORRECT.ft05;
+    else if (b.type==='football_ht_15'||b.type==='football_2h_15') target=CORRECT.ft15;
+    else if (b.type==='tennis_break')      target=CORRECT.brk;
+    else if (b.type==='tennis_set1_set2')  target=CORRECT.s2;
+    else if (b.type==='tennis_set1_match') target=CORRECT.sm;
+    if (target && b.odds !== target) {
+      b.odds = target;
+      if (b.outcome !== 'pending')
+        b.profit = b.outcome==='win' ? parseFloat(((target-1)*b.stake).toFixed(2)) : -b.stake;
+      changed = true;
+    }
+  });
+  if (changed) { lss('r25_bt', btData); console.log('[BT] Cuotas migradas retroactivamente'); }
 }
 
 function rebuildBT() {
