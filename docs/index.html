@@ -140,6 +140,9 @@ a.lnk{color:var(--blu);text-decoration:none;border-bottom:1px solid rgba(94,200,
 .tc-name.srv::after{content:'●';color:var(--grn);font-size:7px;margin-left:5px;vertical-align:middle}
 .tset{width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:700;color:#2a4a63;border-radius:3px;flex-shrink:0}
 .tset.won{color:#dff0ff;font-weight:800}.tset.lost{color:#4a7090;font-weight:500}.tset.cur{background:var(--bg4);color:var(--yel);border:1px solid rgba(255,230,0,.3)}
+.tset-g{background:rgba(94,200,248,.08)!important;border:1px solid rgba(94,200,248,.2)!important;color:var(--blu)!important}
+.tset-g.won{color:var(--grn)!important}.tset-g.lost{color:#ff8888!important}.tset-g.cur{color:var(--blu)!important}
+.tset-pt{width:34px!important;font-size:11px!important;background:rgba(255,230,0,.07)!important;border:1px solid rgba(255,230,0,.2)!important;color:var(--yel)!important}
 .todds{font-family:'IBM Plex Mono',monospace;font-size:11px;padding:2px 8px;border-radius:3px;border:1px solid var(--bd2);background:var(--bg4);color:var(--wht2);flex-shrink:0;margin-left:6px}
 .todds.fav{border-color:var(--grn);color:var(--grn);background:var(--grna);font-weight:600}
 .tc-info{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
@@ -1010,12 +1013,12 @@ function tCardHtml(m){
   const gCur1=m.g1||'0', gCur2=m.g2||'0';
   const gCol1=parseInt(gCur1)>parseInt(gCur2)?'won':parseInt(gCur1)<parseInt(gCur2)?'lost':'cur';
   const gCol2=parseInt(gCur2)>parseInt(gCur1)?'won':parseInt(gCur2)<parseInt(gCur1)?'lost':'cur';
-  const gCell1='<div class="tset '+gCol1+'" style="background:rgba(94,200,248,.08);border:1px solid rgba(94,200,248,.2)">'+gCur1+'</div>';
-  const gCell2='<div class="tset '+gCol2+'" style="background:rgba(94,200,248,.08);border:1px solid rgba(94,200,248,.2)">'+gCur2+'</div>';
+  const gCell1='<div class="tset tset-g '+gCol1+'">'+gCur1+'</div>';
+  const gCell2='<div class="tset tset-g '+gCol2+'">'+gCur2+'</div>';
   // Punto del juego actual
-  const hasPt=m.pt1||m.pt2;
-  const ptCell1=hasPt?'<div class="tset" style="width:34px;font-size:12px;color:var(--yel);background:rgba(255,230,0,.07);border:1px solid rgba(255,230,0,.2);">'+(m.pt1||'0')+'</div>':'';
-  const ptCell2=hasPt?'<div class="tset" style="width:34px;font-size:12px;color:var(--yel);background:rgba(255,230,0,.07);border:1px solid rgba(255,230,0,.2);">'+(m.pt2||'0')+'</div>':'';
+  const hasPt=!!(m.pt1||m.pt2);
+  const ptCell1=hasPt?'<div class="tset tset-pt">'+(m.pt1||'0')+'</div>':'';
+  const ptCell2=hasPt?'<div class="tset tset-pt">'+(m.pt2||'0')+'</div>':'';
   const r1=setsR1+gCell1+ptCell1;
   const r2=setsR2+gCell2+ptCell2;
   const o1d=m.o1!=null?'<div class="todds '+(m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'fav':'')+'">'+m.o1+'x</div>':'';
@@ -1025,12 +1028,15 @@ function tCardHtml(m){
   const cl=m.cat==='wta125'?'WTA 125':m.cat==='itf_m'?'ITF-M':m.cat==='itf_f'?'ITF-F':m.cat.toUpperCase();
   const oddsNote=(!m.o1&&!m.o2)?'<div class="tc-badge" style="color:#ff8888">Sin cuotas disponibles</div>':'<div class="tc-badge hi">Pre-match: '+(m.o1??'n/d')+'x / '+(m.o2??'n/d')+'x</div>';
   // Marcador detallado: sets completados + set actual (juegos)
-  // scoreDetail: leyenda de columnas (S1, S2, G = juegos set actual, Pt = punto)
-  const _legSets=Array.from({length:nSets},(_,i)=>'<div class="tset" style="font-size:8px;color:var(--wht4);background:transparent">S'+(i+1)+'</div>').join('');
-  const _legG='<div class="tset" style="font-size:8px;color:rgba(94,200,248,.6);background:transparent;width:26px">J</div>';
-  const _legPt=hasPt?'<div class="tset" style="font-size:8px;color:rgba(255,230,0,.6);background:transparent;width:34px">Pt</div>':'';
-  const scoreDetail='<div style="display:flex;align-items:center;gap:4px;padding-left:2px;margin-bottom:2px;height:14px">'+
-    '<div style="flex:1;min-width:100px"></div>'+_legSets+_legG+_legPt+'</div>';
+  // scoreDetail: leyenda de columnas alineada con tc-name flex:1
+  const _legSets=Array.from({length:nSets},(_,i)=>'<div class="tset" style="font-size:8px;color:var(--wht4);background:none;border:none">S'+(i+1)+'</div>').join('');
+  const _legG='<div class="tset tset-g" style="font-size:8px;color:rgba(94,200,248,.5);background:none;border:none">J</div>';
+  const _legPt=hasPt?'<div class="tset tset-pt" style="font-size:8px;color:rgba(255,230,0,.5);background:none;border:none">Pt</div>':'';
+  const scoreDetail='<div class="tc-row" style="height:13px;margin-bottom:1px">'+
+    '<div class="tc-name" style="font-size:8px;color:transparent;pointer-events:none">·</div>'+
+    _legSets+_legG+_legPt+
+    '<div style="width:52px"></div>'+ // espacio cuota
+    '</div>';
   let aHtml='';
   if(iA&&m.lastBreak&&fN)aHtml='<div class="tc-alert"><div class="tc-alert-title">🟢 ROTO — '+fN.toUpperCase()+' VA PERDIENDO</div><div class="tc-alert-sc">'+m.p1+' <strong>'+m.lastBreak.gP1+'–'+m.lastBreak.gP2+'</strong> '+m.p2+' · Set '+m.curSetNum+'</div><div class="tc-alert-odds">Favorito: <strong>'+fN+'</strong> @<strong>'+fO+'x</strong> pre-match<br><span style="font-size:9px;opacity:.7">Alerta ya enviada a Telegram</span></div><button class="logbtn g" onclick="openBetFromCard(\''+m.id+'\')">📝 Registrar apuesta</button></div>';
   return '<div class="card '+(iA?'alert':m.mon?'mon':'live')+'"><div class="tc-in"><div class="tc-top"><div><div class="tc-trn">'+m.trn+'</div><div class="tc-cat '+m.cat+'">'+cl+'</div></div><div style="text-align:right">'+monB+'<div style="margin-top:3px"><span class="fcbadge lv">LIVE</span></div></div></div>'+scoreDetail+'<div class="tc-rows"><div class="tc-row"><div class="tc-name '+(m.srv===1?'srv':'')+'">'+m.p1+'</div>'+r1+o1d+'</div><div class="tc-row"><div class="tc-name '+(m.srv===2?'srv':'')+'">'+m.p2+'</div>'+r2+o2d+'</div></div><div class="tc-info">'+oddsNote+'<div class="tc-badge">P2P: '+m.pbpLen+' juegos</div></div>'+aHtml+'</div></div>';
