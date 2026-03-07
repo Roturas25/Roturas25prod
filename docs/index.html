@@ -1251,7 +1251,7 @@ function renderOddsBands(){
 // Datos guardados en localStorage bajo 'r25_bt'.
 // ═══════════════════════════════════════════════════════════
 
-let btData = lgs('r25_bt') || [];   // array de entradas BT
+let btData = JSON.parse(ls('r25_bt') || '[]');   // array de entradas BT
 let btFilter = 'all';
 const BT_VERSION = 1;
 
