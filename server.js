@@ -197,6 +197,8 @@ function normF(m, code) {
     min,
     h:  m.homeTeam?.shortName || m.homeTeam?.name || '?',
     a:  m.awayTeam?.shortName || m.awayTeam?.name || '?',
+    hc: m.homeTeam?.crest || null,
+    ac: m.awayTeam?.crest || null,
     lh: shF, la: saF,
     lhH: shH, laH: saH,   // marcador al descanso
     g2,
@@ -363,6 +365,7 @@ function normTUp(e) {
     o1, o2, mon, hasOdds: o1 != null || o2 != null,
     localT: dt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid' }),
     localD: dt.toLocaleDateString('es-ES', { weekday: 'short', day: '2-digit', month: '2-digit' }),
+    _ts: dt.getTime(),
     isUp: true,
   };
 }
