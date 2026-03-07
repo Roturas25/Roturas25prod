@@ -169,18 +169,33 @@ function normF(m, code) {
   const shH = m.score?.halfTime?.home  ?? null;
   const saH = m.score?.halfTime?.away  ?? null;
 
-  // Minuto actual — football-data.org a veces devuelve null en 2ª parte
+  // Minuto actual — football-data.org plan gratuito no siempre da minute en tiempo real.
+  // Estrategia: usar m.minute si viene, sino calcular desde utcDate (hora de inicio).
   let min = 0;
   if (m.status === 'PAUSED') {
     min = 45;
   } else if (m.status === 'IN_PLAY') {
     if (m.minute != null && m.minute > 0) {
       min = m.minute + (m.injuryTime || 0);
-    } else if (m.currentPeriodStartedAt) {
-      const elapsed = Math.floor((Date.now() - new Date(m.currentPeriodStartedAt).getTime()) / 60000);
-      // Si ya hay datos de medio tiempo, estamos en 2ª parte
-      const inSecondHalf = shH != null && shH >= 0;
-      min = inSecondHalf ? Math.min(45 + elapsed, 90) : Math.min(elapsed, 45);
+    } else {
+      // Fallback: tiempo transcurrido desde el inicio del partido
+      const startTs = m.utcDate ? new Date(m.utcDate).getTime() : 0;
+      if (startTs > 0) {
+        const elapsed = Math.floor((Date.now() - startTs) / 60000);
+        // El partido tiene ~45min de 1ª parte + ~15min de descanso + 45min de 2ª parte
+        // Si elapsed < 50 → 1ª parte (min real ≈ elapsed)
+        // Si elapsed >= 50 y < 65 → descanso o inicio 2ª parte (min ≈ 45)
+        // Si elapsed >= 65 → 2ª parte (min real ≈ 45 + (elapsed - 65) + margen)
+        // Partido real: 45min 1ªP + ~15min descanso + 45min 2ªP
+        // elapsed desde utcDate incluye el descanso
+        if (elapsed <= 47) {
+          min = elapsed;                            // 1ª parte
+        } else if (elapsed <= 62) {
+          min = 45;                                 // descanso / primeros segundos 2ªP
+        } else {
+          min = Math.min(45 + (elapsed - 62), 90); // 2ª parte
+        }
+      }
     }
   }
 
@@ -226,36 +241,66 @@ async function fetchFootball() {
 
 function checkFootballAlerts() {
   lastFootball.forEach(m => {
-    if (m.status !== 'IN_PLAY' || !m.min) return;
+    if (m.status !== 'IN_PLAY') return;
+    // NOTA: football-data.org plan gratuito no devuelve marcador en tiempo real.
+    // El minuto se calcula desde utcDate como proxy. Ventana amplia para no perder la alerta.
 
-    // Alerta min.24-31: partido 0-0 en primera parte
+    // Alerta 1ª parte: entre min.22 y min.38 (ventana amplia para cubrir imprecisión)
     const k25 = '25_' + m.id;
-    if (m.min >= 24 && m.min <= 31 && m.lh === 0 && m.la === 0 && !alerted.has(k25)) {
+    if (m.min >= 22 && m.min <= 38 && !alerted.has(k25)) {
       alerted.add(k25);
       const sim = {
         id: k25, type: 'football_ht', match: `${m.h} vs ${m.a}`,
-        detail: `${m.league} · Min.${m.min} · 0-0 → Gol 1ª parte`,
+        detail: `${m.league} · ~Min.${m.min} · Sin gol confirmado → Gol 1ª parte`,
         alertedAt: nowISO(), resolved: false, outcome: null,
-        _matchId: m.id, _resolveOn: 'ht_goal',
+        _matchId: m.id.replace('fd_',''), _resolveOn: 'ht_goal',
       };
       simAlerts.unshift(sim);
       if (simAlerts.length > 500) simAlerts.length = 500;
-      sendTG(`⚽ ROTURAS25 — FÚTBOL ALERTA\n${m.league}\n${m.h} vs ${m.a}\n⏱ Min.${m.min} · Marcador: 0-0\n→ APOSTAR: Habrá gol en 1ª parte`);
+      sendTG(
+        `⚽ ROTURAS25 — FÚTBOL ALERTA
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `${m.league}
+` +
+        `${m.h} vs ${m.a}
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `⏱ ~Min.${m.min} · 1ª PARTE
+` +
+        `→ APOSTAR: Gol en 1ª parte`
+      );
     }
 
-    // Alerta min.66-73: 2ª parte sin goles (lhH/laH son los goles del descanso)
+    // Alerta 2ª parte: entre min.63 y min.78
     const k67 = '67_' + m.id;
-    if (m.min >= 66 && m.min <= 73 && m.g2 === 0 && !alerted.has(k67)) {
+    if (m.min >= 63 && m.min <= 78 && !alerted.has(k67)) {
       alerted.add(k67);
       const sim = {
         id: k67, type: 'football_2h', match: `${m.h} vs ${m.a}`,
-        detail: `${m.league} · Min.${m.min} · Sin gol en 2ª parte → Gol 2ª parte`,
+        detail: `${m.league} · ~Min.${m.min} · Sin gol en 2ª parte → Gol 2ª parte`,
         alertedAt: nowISO(), resolved: false, outcome: null,
-        _matchId: m.id, _resolveOn: 'sh_goal',
+        _matchId: m.id.replace('fd_',''), _resolveOn: 'sh_goal',
       };
       simAlerts.unshift(sim);
       if (simAlerts.length > 500) simAlerts.length = 500;
-      sendTG(`⚽ ROTURAS25 — FÚTBOL ALERTA\n${m.league}\n${m.h} vs ${m.a}\n⏱ Min.${m.min} · Sin gol en 2ª parte (total: ${m.lh}-${m.la})\n→ APOSTAR: Habrá gol en 2ª parte`);
+      sendTG(
+        `⚽ ROTURAS25 — FÚTBOL ALERTA
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `${m.league}
+` +
+        `${m.h} vs ${m.a}
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `⏱ ~Min.${m.min} · 2ª PARTE
+` +
+        `→ APOSTAR: Gol en 2ª parte`
+      );
     }
   });
 }
@@ -285,7 +330,15 @@ function resolveFootballSims() {
 
 function getCat(s) {
   const l = (s || '').toLowerCase();
-  if (l.includes('itf'))                        return 'itf';
+  if (l.includes('itf')) {
+    // Distinguir ITF masculino (M) de femenino (F)
+    // AllSportsAPI suele indicar "ITF Women", "ITF W", "W15", "W25", "W60", "W100"
+    // o incluir "women" en country_name/league_name
+    const isWomen = l.includes('women') || l.includes(' w ') || l.includes('/w/')
+      || /\bitf w\d/i.test(s) || /\bw\d{1,3}\b/.test(s)
+      || l.includes('wta') || l.includes('female') || l.includes('ladies');
+    return isWomen ? 'itf_f' : 'itf_m';
+  }
   if (l.includes('125') || l.includes('w125')) return 'wta125';
   if (l.includes('wta'))                        return 'wta';
   if (l.includes('challenger'))                 return 'challenger';
@@ -311,10 +364,19 @@ function normT(e) {
     sets1.push(parseInt(s.score_first)  || 0);
     sets2.push(parseInt(s.score_second) || 0);
   });
-  const gr  = (e.event_game_result || '0 - 0').split(' - ');
-  const g1  = (gr[0] || '0').trim();
-  const g2  = (gr[1] || '0').trim();
   const curSetNum = completedScores.length + 1;
+  // Juegos del set actual: primero intentar event_first/second_player_score_current_set
+  // (campos propios de AllSportsAPI), si no, derivar del último juego completo del pbp.
+  // event_game_result = puntos del juego en curso ("40 - 15"), NO sirve para juegos del set.
+  let cg1 = 0, cg2 = 0;
+  const csRaw1 = parseInt(e.event_first_player_score_current_set);
+  const csRaw2 = parseInt(e.event_second_player_score_current_set);
+  if (!isNaN(csRaw1) && !isNaN(csRaw2)) {
+    cg1 = csRaw1; cg2 = csRaw2;
+  }
+  // g1/g2 = juegos del set actual (para mostrar y para lógica de break)
+  const g1 = String(cg1);
+  const g2 = String(cg2);
 
   const pbp      = e.pointbypoint || [];
   const curGames = pbp.filter(g => g.set_number === 'Set ' + curSetNum);
@@ -353,6 +415,8 @@ function normT(e) {
     curSetNum, lastBreak, pbpLen: pbp.length, mon,
     isUp: false,
     hasOdds: o1 != null || o2 != null,
+    // cuota live en tiempo real del favorito para el modal de registro
+    liveO1: o1, liveO2: o2,
   };
 }
 
@@ -419,16 +483,115 @@ function isBreakAlert(m) {
   if (m.o1 != null && m.o1 >= ODD_MIN && m.o1 <= ODD_MAX)      favIs = 'First Player';
   else if (m.o2 != null && m.o2 >= ODD_MIN && m.o2 <= ODD_MAX) favIs = 'Second Player';
   else return false;
-  // El favorito fue rotado (perdió el saque)
-  // No comprobamos el marcador: el score en pbp live puede ser el del juego anterior
-  // aún sin actualizar, por lo que rivG > favG puede fallar aunque el break sea real.
-  // La key única por juego (setLabel+gameNum) evita alertas duplicadas.
-  return m.lastBreak.broken === favIs;
+  if (m.lastBreak.broken !== favIs) return false;
+  // CRÍTICO: solo alertar si el favorito está efectivamente PERDIENDO en juegos del set.
+  // g1/g2 ahora son los juegos del set actual (extraídos de event_*_score_current_set).
+  // Esto evita alertas cuando el rival solo ha igualado tras ir el fav por delante.
+  const favG = favIs === 'First Player' ? parseInt(m.g1) : parseInt(m.g2);
+  const rivG = favIs === 'First Player' ? parseInt(m.g2) : parseInt(m.g1);
+  // rivG > favG: el rival lleva más juegos → el fav va perdiendo el set
+  return rivG > favG;
+}
+
+// ─── Rastreo de recuperaciones de break por partido+set ───────────────────────
+// Estructura: breakRecoveries[matchId_setNum] = { alerted, favIs, broken_gameNum }
+const breakRecoveries = new Map();
+
+function checkBreakRecovery(live) {
+  // Para cada partido en live que tiene una alerta de break previa en simAlerts:
+  // detectar si el favorito ha recuperado el empate en el marcador del set.
+  live.forEach(m => {
+    const favIs = m.o1 != null && m.o1 >= ODD_MIN && m.o1 <= ODD_MAX
+      ? 'First Player'
+      : m.o2 != null && m.o2 >= ODD_MIN && m.o2 <= ODD_MAX
+        ? 'Second Player'
+        : null;
+    if (!favIs) return;
+
+    const favG = parseInt(favIs === 'First Player' ? m.g1 : m.g2) || 0;
+    const rivG = parseInt(favIs === 'First Player' ? m.g2 : m.g1) || 0;
+    const favName = favIs === 'First Player' ? m.p1 : m.p2;
+    const favO    = favIs === 'First Player' ? m.o1 : m.o2;
+
+    // Buscar si hay un simAlert de break activo para este partido+set
+    const breakSim = simAlerts.find(s =>
+      s.type === 'tennis_break' && !s.resolved
+      && s._eventId === m.id && s._setNum === m.curSetNum
+    );
+    if (!breakSim) return;
+
+    const rkKey = `${m.id}_s${m.curSetNum}`;
+
+    // Registrar todas las roturas para el contador global (una sola vez por rkKey)
+    if (!breakRecoveries.has(rkKey)) {
+      breakRecoveries.set(rkKey, { recovered: false, alertedRecovery: false });
+    }
+    const rec = breakRecoveries.get(rkKey);
+
+    // Si el fav ya ha igualado (favG === rivG, ambos > 0) y no hemos alertado recuperación
+    if (favG > 0 && favG === rivG && !rec.alertedRecovery) {
+      rec.alertedRecovery = true;
+      rec.recovered = true;
+      // Guardar en simAlerts como registro de recuperación
+      const krec = `rec_${m.id}_s${m.curSetNum}_${favG}`;
+      if (!alerted.has(krec)) {
+        alerted.add(krec);
+        const simRec = {
+          id: krec, type: 'tennis_recovery', match: `${m.p1} vs ${m.p2}`,
+          detail: `${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: ${favG}-${rivG} empate · Fav: ${favName}`,
+          alertedAt: nowISO(), resolved: true, outcome: 'RECOVERY',
+          _eventId: m.id, _setNum: m.curSetNum, _favIs: favIs,
+          _favO: favO, _oddsband: breakSim._oddsband,
+        };
+        simAlerts.unshift(simRec);
+        if (simAlerts.length > 500) simAlerts.length = 500;
+
+        const favO_ = favO != null ? favO + 'x' : 'n/d';
+        sendTG(
+          `🎾 ROTURAS25 — BREAK RECUPERADO\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `${m.p1} vs ${m.p2}\n` +
+          `📍 ${m.trn} [${m.cat.toUpperCase()}]\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `✅ ${favName} ha RECUPERADO el break\n` +
+          `   Marcador en Set ${m.curSetNum}: ${m.p1} ${m.g1}–${m.g2} ${m.p2}\n` +
+          `⭐ Fav @ ${favO_}\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `→ El partido se ha igualado en el set`
+        );
+      }
+    }
+
+    // Si el marcador actual favorece al fav (favG > rivG) pero ya había igualado: reset para no volver a alertar
+    // (si le vuelven a romper, se creará nuevo simAlert de break con nuevo gameNum)
+    if (favG > rivG && rec.alertedRecovery) {
+      rec.alertedRecovery = false; // reset por si hay otra rotura posterior
+    }
+  });
+}
+
+// ─── Alerta inicio de partido de fútbol ───────────────────────────────────────
+function checkFootballStart() {
+  lastFootball.forEach(m => {
+    if (m.status !== 'IN_PLAY') return;
+    const ks = `fstart_${m.id}`;
+    if (alerted.has(ks)) return;
+    alerted.add(ks);
+    sendTG(
+      `⚽ PARTIDO INICIADO — ${m.league}\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `${m.h} vs ${m.a}\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `→ Sigue el partido y prepara alertas de gol`
+    );
+  });
 }
 
 function checkMonitoredMatchStart() {
-  // Alerta cuando un partido monitorizado pasa de upcoming a live
-  lastTennis.filter(m => !m.isUp && m.mon).forEach(m => {
+  // Alerta cuando un partido monitorizado pasa de upcoming a REALMENTE live
+  // Condición extra: pbpLen>0 (primer punto jugado) para evitar falsos positivos
+  // cuando AllSportsAPI mete el partido en livescore antes de que empiece de verdad.
+  lastTennis.filter(m => !m.isUp && m.mon && m.pbpLen > 0).forEach(m => {
     const ks = `start_${m.id}`;
     if (alerted.has(ks)) return;
     alerted.add(ks);
@@ -458,12 +621,20 @@ function checkTennisAlerts(live) {
     const favName = favIs === 'First Player' ? m.p1 : m.p2;
     const favO    = favIs === 'First Player' ? m.o1  : m.o2;
 
+    const oddsband = favO == null ? 'n/d'
+      : favO < 1.30 ? '1.20-1.30'
+      : favO < 1.40 ? '1.30-1.40'
+      : favO < 1.50 ? '1.40-1.50'
+      : '1.50-1.60';
+
     const sim = {
       id: kb, type: 'tennis_break', match: `${m.p1} vs ${m.p2}`,
-      detail: `${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: ${m.lastBreak.gP1}–${m.lastBreak.gP2} · Fav: ${favName}`,
+      detail: `${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: ${m.lastBreak.gP1}–${m.lastBreak.gP2} · Fav ROTO: ${favName}`,
       alertedAt: nowISO(), resolved: false, outcome: null,
       _eventId: m.id, _setNum: m.curSetNum, _favIs: favIs,
       _setsP1atAlert: [...m.sets1], _setsP2atAlert: [...m.sets2],
+      _favO: favO, _oddsband: oddsband, _cat: m.cat,
+      _liveO1: m.o1, _liveO2: m.o2,  // cuotas en tiempo real al momento de la alerta
     };
     simAlerts.unshift(sim);
     if (simAlerts.length > 500) simAlerts.length = 500;
@@ -472,13 +643,13 @@ function checkTennisAlerts(live) {
     const totalStr = setsStr ? `Sets: ${setsStr}  |  Set actual: ${m.g1}-${m.g2}` : `Marcador: ${m.g1}-${m.g2}`;
 
     sendTG(
-      `🎾 ROTURAS25 — ROTURA DE SAQUE\n` +
+      `🎾 ROTURAS25 — SAQUE ROTO\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `${m.p1} vs ${m.p2}\n` +
       `📍 ${m.trn} [${m.cat.toUpperCase()}]\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
       `📊 ${totalStr}\n` +
-      `⚡ ${favName} ha sido ROTADO en Set ${m.curSetNum}\n` +
+      `⚡ ${favName} ha sido ROTO en Set ${m.curSetNum}\n` +
       `   Juegos en el set: ${m.p1} ${m.lastBreak.gP1} – ${m.lastBreak.gP2} ${m.p2}\n` +
       `   ${favName} va PERDIENDO el set\n` +
       `━━━━━━━━━━━━━━━━━━━━\n` +
@@ -491,19 +662,132 @@ function checkTennisAlerts(live) {
   });
 }
 
+// ─── Alerta: favorito pierde el Set 1 ─────────────────────────────────────────
+// Condición: sets1.length === 1 y el favorito perdió ese primer set
+// Genera DOS alertas separadas: ganar Set 2 + ganar partido
+function checkSet1Loss(live) {
+  live.forEach(m => {
+    const favIs = m.o1 != null && m.o1 >= ODD_MIN && m.o1 <= ODD_MAX
+      ? 'First Player'
+      : m.o2 != null && m.o2 >= ODD_MIN && m.o2 <= ODD_MAX
+        ? 'Second Player'
+        : null;
+    if (!favIs) return;
+    // Solo actuar cuando acaba de terminar el Set 1 (sets1.length === 1)
+    if (m.sets1.length !== 1) return;
+
+    const fav1 = favIs === 'First Player' ? m.sets1[0] : m.sets2[0];
+    const riv1 = favIs === 'First Player' ? m.sets2[0] : m.sets1[0];
+    if (fav1 >= riv1) return; // el fav ganó o empató el set 1
+
+    const favName = favIs === 'First Player' ? m.p1 : m.p2;
+    const favO    = favIs === 'First Player' ? m.o1 : m.o2;
+    const oddsband = favO == null ? 'n/d'
+      : favO < 1.30 ? '1.20-1.30'
+      : favO < 1.40 ? '1.30-1.40'
+      : favO < 1.50 ? '1.40-1.50'
+      : '1.50-1.60';
+
+    // Una sola alerta TG, pero DOS registros en simAlerts (estadísticas separadas)
+    const ks2 = `set1loss_s2_${m.id}`;
+    const ksM = `set1loss_match_${m.id}`;
+    if (!alerted.has(ksM)) {
+      // Registrar "gana Set 2"
+      if (!alerted.has(ks2)) {
+        alerted.add(ks2);
+        simAlerts.unshift({
+          id: ks2, type: 'tennis_set1_set2', match: `${m.p1} vs ${m.p2}`,
+          detail: `${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana S2?`,
+          alertedAt: nowISO(), resolved: false, outcome: null,
+          _eventId: m.id, _setNum: 2, _favIs: favIs,
+          _setsP1atAlert: [...m.sets1], _setsP2atAlert: [...m.sets2],
+          _favO: favO, _oddsband: oddsband, _cat: m.cat,
+        });
+        if (simAlerts.length > 500) simAlerts.length = 500;
+      }
+      // Registrar "gana partido"
+      alerted.add(ksM);
+      const simM = {
+        id: ksM, type: 'tennis_set1_match', match: `${m.p1} vs ${m.p2}`,
+        detail: `${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana partido?`,
+        alertedAt: nowISO(), resolved: false, outcome: null,
+        _eventId: m.id, _favIs: favIs,
+        _setsP1atAlert: [...m.sets1], _setsP2atAlert: [...m.sets2],
+        _favO: favO, _oddsband: oddsband, _cat: m.cat,
+      };
+      simAlerts.unshift(simM);
+      if (simAlerts.length > 500) simAlerts.length = 500;
+
+      // Un solo Telegram con las dos apuestas
+      const s1Str = `${m.sets1[0]}-${m.sets2[0]}`;
+      sendTG(
+        `🎾 ROTURAS25 — FAVORITO PIERDE SET 1
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `${m.p1} vs ${m.p2}
+` +
+        `📍 ${m.trn} [${m.cat.toUpperCase()}]
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `📊 Set 1: ${s1Str} — ${favName} PERDIÓ
+` +
+        `⭐ Fav: ${favName} @ ${favO != null ? favO + 'x' : 'n/d'}
+` +
+        `━━━━━━━━━━━━━━━━━━━━
+` +
+        `→ APOSTAR 1: ${favName} gana el Set 2
+` +
+        `→ APOSTAR 2: ${favName} gana el partido`
+      );
+    }
+  });
+}
+
 function resolveTennisSims() {
   simAlerts.forEach(s => {
-    if (s.resolved || s.type !== 'tennis_break') return;
+    if (s.resolved) return;
     const m = lastTennis.find(x => x.id === s._eventId);
     if (!m || m.isUp) return;
-    if (m.sets1.length > s._setsP1atAlert.length) {
+    const favName = s._favIs === 'First Player' ? s.match.split(' vs ')[0] : s.match.split(' vs ')[1]?.trim();
+
+    // ── Rotura de saque: el favorito gana/pierde el set donde fue roto ──
+    if (s.type === 'tennis_break' && m.sets1.length > s._setsP1atAlert.length) {
       const setIdx = s._setNum - 1;
       const p1Won  = m.sets1[setIdx] > m.sets2[setIdx];
       const favWon = s._favIs === 'First Player' ? p1Won : !p1Won;
       s.outcome = favWon ? 'WIN' : 'LOSS';
       s.resolved = true; s.resolvedAt = nowISO();
-      const favName = s._favIs === 'First Player' ? s.match.split(' vs ')[0] : s.match.split(' vs ')[1]?.trim();
-      sendTG(`📊 RESULTADO SIM · ${s.match}\nSet ${s._setNum}: ${m.sets1[setIdx]}-${m.sets2[setIdx]}\n${favName}: ${favWon ? '✅ GANÓ' : '❌ PERDIÓ'} el set`);
+      sendTG(`📊 RESULTADO · ${s.match}\nSet ${s._setNum}: ${m.sets1[setIdx]}-${m.sets2[setIdx]}\n${favName}: ${favWon ? '✅ GANÓ' : '❌ PERDIÓ'} el set`);
+    }
+
+    // ── Pérdida Set 1: ¿ganó el Set 2? ──
+    if (s.type === 'tennis_set1_set2' && m.sets1.length >= 2) {
+      const p1Won = m.sets1[1] > m.sets2[1];
+      const favWon = s._favIs === 'First Player' ? p1Won : !p1Won;
+      s.outcome = favWon ? 'WIN' : 'LOSS';
+      s.resolved = true; s.resolvedAt = nowISO();
+      sendTG(`📊 RESULTADO · ${s.match}\nSet 2: ${m.sets1[1]}-${m.sets2[1]}\n${favName}: ${favWon ? '✅ GANÓ' : '❌ PERDIÓ'} el Set 2`);
+    }
+
+    // ── Pérdida Set 1: ¿ganó el partido? ──
+    // Partido terminado = el favorito tiene sets ganados > sets perdidos O viceversa (mejor de 3)
+    if (s.type === 'tennis_set1_match') {
+      const finished = m.sets1.length >= 2 && (
+        (m.sets1.filter((v,i) => v > m.sets2[i]).length === 2) ||
+        (m.sets2.filter((v,i) => v > m.sets1[i]).length === 2)
+      );
+      if (finished) {
+        const p1Sets = m.sets1.filter((v,i) => v > m.sets2[i]).length;
+        const p2Sets = m.sets2.filter((v,i) => v > m.sets1[i]).length;
+        const p1Won  = p1Sets > p2Sets;
+        const favWon = s._favIs === 'First Player' ? p1Won : !p1Won;
+        s.outcome = favWon ? 'WIN' : 'LOSS';
+        s.resolved = true; s.resolvedAt = nowISO();
+        const score = m.sets1.map((v,i) => `${v}-${m.sets2[i]}`).join(' ');
+        sendTG(`📊 RESULTADO · ${s.match}\nPartido: ${score}\n${favName}: ${favWon ? '✅ GANÓ' : '❌ PERDIÓ'} el partido`);
+      }
     }
   });
 }
@@ -521,8 +805,11 @@ async function poll() {
     await fetchFootball().catch(e => console.error('[FOOTBALL]', e.message));
 
     checkTennisAlerts(live || []);
+    checkSet1Loss(live || []);
+    checkBreakRecovery(live || []);
     checkMonitoredMatchStart();
     checkFootballAlerts();
+    checkFootballStart();
     resolveTennisSims();
     resolveFootballSims();
     lastUpdate = new Date().toISOString();
@@ -551,6 +838,40 @@ const server = http.createServer((req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname;
 
   if (path === '/data') {
+    // Calcular stats por banda de cuota (solo registros resueltos tennis_break)
+    const bands = ['1.20-1.30','1.30-1.40','1.40-1.50','1.50-1.60'];
+    const oddStats = {};
+    bands.forEach(b => { oddStats[b] = { alerts:0, wins:0, losses:0, recoveries:0 }; });
+    // Stats por categoría (itf_m, itf_f, atp, wta, etc.)
+    const catStats = {};
+    simAlerts.forEach(s => {
+      // Break stats por cuota
+      if (['tennis_break','tennis_set1_set2','tennis_set1_match'].includes(s.type) && s.resolved && s._oddsband) {
+        const b = s._oddsband;
+        if (!oddStats[b]) oddStats[b] = { alerts:0, wins:0, losses:0, recoveries:0 };
+        oddStats[b].alerts++;
+        if (s.outcome === 'WIN')  oddStats[b].wins++;
+        if (s.outcome === 'LOSS') oddStats[b].losses++;
+      }
+      // Recovery stats — enlazar recuperaciones con la alerta de break correspondiente
+      if (s.type === 'tennis_recovery' && s._oddsband) {
+        const b = s._oddsband;
+        if (!oddStats[b]) oddStats[b] = { alerts:0, wins:0, losses:0, recoveries:0 };
+        oddStats[b].recoveries++;
+      }
+      // Cat stats (itf_m, itf_f separados)
+      const cat = s._cat;
+      if (cat && ['tennis_break','tennis_set1_set2','tennis_set1_match'].includes(s.type) && s.resolved) {
+        if (!catStats[cat]) catStats[cat] = { alerts:0, wins:0, losses:0, recoveries:0 };
+        catStats[cat].alerts++;
+        if (s.outcome === 'WIN')  catStats[cat].wins++;
+        if (s.outcome === 'LOSS') catStats[cat].losses++;
+      }
+      if (cat && s.type === 'tennis_recovery') {
+        if (!catStats[cat]) catStats[cat] = { alerts:0, wins:0, losses:0, recoveries:0 };
+        catStats[cat].recoveries++;
+      }
+    });
     res.writeHead(200);
     res.end(JSON.stringify({
       football:  lastFootball,
@@ -558,6 +879,7 @@ const server = http.createServer((req, res) => {
       updated:   lastUpdate,
       alerted:   [...alerted],
       simAlerts: simAlerts.slice(0, 200),
+      oddStats, catStats,
     }));
     return;
   }
