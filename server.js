@@ -189,12 +189,21 @@ function normT(e){
   const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
   const sets1=cs.map(s=>parseInt(s.score_first)||0), sets2=cs.map(s=>parseInt(s.score_second)||0);
   const curSetNum=cs.length+1;
-  // Juegos del set actual — con fallback al último juego del pbp
+  // Juegos del set actual — 3 fuentes por orden de prioridad
   const cr1=parseInt(e.event_first_player_score_current_set), cr2=parseInt(e.event_second_player_score_current_set);
   let g1=String(!isNaN(cr1)?cr1:0), g2=String(!isNaN(cr2)?cr2:0);
   const pbp=e.pointbypoint||[];
   const curGames=pbp.filter(g=>g.set_number==='Set '+curSetNum);
-  // Fallback: si API no da current_set, derivarlo del score del último juego del pbp
+  // Fallback 1: última fila de scores[] que NO pasó el filtro de set completado
+  // (AllSportsAPI mete el set en curso en scores[] cuando current_set viene vacío)
+  if(g1==='0'&&g2==='0'){
+    const incompleteRow=scores.find((s,i)=>i===cs.length); // la fila justo después de los completados
+    if(incompleteRow){
+      const a=parseInt(incompleteRow.score_first),b=parseInt(incompleteRow.score_second);
+      if(!isNaN(a)&&!isNaN(b)){g1=String(a);g2=String(b);}
+    }
+  }
+  // Fallback 2: score del último juego registrado en el pbp del set actual
   if(g1==='0'&&g2==='0'&&curGames.length>0){
     const lastPbp=curGames[curGames.length-1];
     if(lastPbp&&lastPbp.score){const sp=(lastPbp.score||'').split(' - ');if(sp.length===2){g1=(sp[0]||'0').trim();g2=(sp[1]||'0').trim();}}
