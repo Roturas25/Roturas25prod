@@ -1057,10 +1057,7 @@ server.listen(PORT, () => {
   setTimeout(pushStatusToGH, 8000);
   // Mensaje de inicio — solo 1 por deploy real (no en crash loops)
   // Throttle: no enviar si hay otro mensaje en los últimos 5 min
-  setTimeout(async () => {
-    try {
-      const startMsg = `✅ Roturas25 v5 activo\n⏱ ${new Date().toLocaleString('es-ES', {timeZone:'Europe/Madrid'})}`;
-      await sendTG(startMsg);
-    } catch(e) { console.warn('[STARTUP TG]', e.message); }
-  }, 4000);
+  // NO enviar TG en cada restart (Railway reinicia periódicamente en plan gratuito)
+  // Solo log local
+  console.log('[STARTUP] Server ready. Polls iniciando...');
 });
