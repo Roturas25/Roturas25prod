@@ -364,8 +364,10 @@ function resolveTennisSims(){
     const favName=s._favIs==='First Player'?s.match.split(' vs ')[0]:(s.match.split(' vs ')[1]||'').trim();
     if(s.type==='tennis_break'&&m.sets1.length>s._setsP1atAlert.length){
       const idx=s._setNum-1, favWon=s._favIs==='First Player'?m.sets1[idx]>m.sets2[idx]:m.sets2[idx]>m.sets1[idx];
+      const sc1=m.sets1[idx], sc2=m.sets2[idx];
+      s._tiebreak=(sc1===7&&sc2===6)||(sc1===6&&sc2===7);
       s.outcome=favWon?'WIN':'LOSS'; s.resolved=true; s.resolvedAt=nowISO();
-      sendTG(`📊 RESULTADO · ${s.match}\nSet ${s._setNum}: ${m.sets1[idx]}-${m.sets2[idx]}\n${favName}: ${favWon?'✅ GANÓ':'❌ PERDIÓ'} el set`);
+      sendTG(`📊 RESULTADO · ${s.match}\nSet ${s._setNum}: ${sc1}-${sc2}${s._tiebreak?' 🔀 TIEBREAK':''}\n${favName}: ${favWon?'✅ GANÓ':'❌ PERDIÓ'} el set`);
     }
     if(s.type==='tennis_set1_set2'&&m.sets1.length>=2){
       const favWon=s._favIs==='First Player'?m.sets1[1]>m.sets2[1]:m.sets2[1]>m.sets1[1];
