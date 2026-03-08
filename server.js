@@ -25,6 +25,30 @@ const htSnapshot        = new Map();
 const kickoffSnapshot   = new Map();
 const breakRecoveries   = new Map();
 
+// ── Surface cache (AllSportsAPI Countries endpoint) ─────────────────────────
+// Cargado una vez al arranque: league_key → 'clay'|'grass'|'hard'|'hard_i'
+const surfaceCache = new Map();
+
+async function loadSurfaceCache() {
+  if (!TENNIS_KEY) return;
+  try {
+    const r = await fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Countries&APIkey=${TENNIS_KEY}`);
+    if (!r.result) return;
+    let loaded = 0;
+    r.result.forEach(t => {
+      if (!t.league_key || !t.league_surface) return;
+      const raw = (t.league_surface || '').toLowerCase().trim();
+      let surf = 'hard';
+      if (raw.includes('clay'))  surf = 'clay';
+      else if (raw.includes('grass')) surf = 'grass';
+      else if (raw.includes('carpet')||raw.includes('indoor')) surf = 'hard_i';
+      surfaceCache.set(String(t.league_key), surf);
+      loaded++;
+    });
+    console.log(`[SURFACE] Cache cargado: ${loaded} torneos`);
+  } catch(e) { console.warn('[SURFACE]', e.message); }
+}
+
 // ── Firebase persistencia de estado ─────────────────────────────────────────
 const FB_URL = 'https://roturas25-default-rtdb.europe-west1.firebasedatabase.app';
 let fbSaveTimer = null;
@@ -257,10 +281,10 @@ function getTier(s){
   return 'atp_other';
 }
 
-// Superficie a partir del nombre del torneo/país
-// AllSportsAPI no da superficie directamente — inferimos del nombre
-// Cubiertos los torneos principales del circuito ATP/WTA
-function getSurface(trn, country){
+// Superficie: primero busca en el cache del API, luego heurístico por nombre
+function getSurface(trn, country, leagueKey){
+  // Fuente 1: cache directo de AllSportsAPI Countries (league_surface)
+  if (leagueKey && surfaceCache.has(String(leagueKey))) return surfaceCache.get(String(leagueKey));
   const l=(trn||'').toLowerCase()+' '+(country||'').toLowerCase();
   // Clay (tierra batida) - por nombre/ubicación
   if(l.includes('roland garros')||l.includes('monte carlo')||l.includes('monte-carlo')||
@@ -293,7 +317,7 @@ function normT(e){
   const _trnFull=(e.country_name||'')+' '+(e.league_name||'');
   const cat=getCat(_trnFull);
   const tier=getTier(e.league_name||'');
-  const surface=getSurface(e.league_name||'', e.country_name||'');
+  const surface=getSurface(e.league_name||'', e.country_name||'', e.league_key);
   const{o1,o2}=getMatchOdds(e);
   const scores=e.scores||[];
   const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
@@ -343,7 +367,7 @@ function normT(e){
 function normTUp(e){
   const cat=getCat((e.country_name||'')+' '+(e.league_name||''));
   const tier=getTier(e.league_name||'');
-  const surface=getSurface(e.league_name||'', e.country_name||'');
+  const surface=getSurface(e.league_name||'', e.country_name||'', e.league_key);
   let dt; try{dt=new Date(`${e.event_date}T${e.event_time||'00:00'}:00`);}catch{dt=new Date();}
   if(isNaN(dt.getTime())) dt=new Date();
   const{o1,o2}=getMatchOdds(e);
@@ -606,6 +630,7 @@ server.listen(PORT, async ()=>{
   console.log(`\n🎾 ROTURAS25 v6 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗ falta FOOTBALL_KEY'}  Tennis:${TENNIS_KEY?'✓':'✗ falta TENNIS_KEY'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
+  await loadSurfaceCache();
   await loadStateFromFB();
   poll();
 });
