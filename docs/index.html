@@ -425,65 +425,76 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
   </div>
 
   <!-- Filtros BT -->
-  <div class="sim-filters" style="margin-bottom:10px">
-    <button class="pill active" id="btf-all" onclick="setBTFilter('all',this)">Todas</button>
-    <button class="pill" id="btf-win" onclick="setBTFilter('win',this)">✅</button>
-    <button class="pill" id="btf-loss" onclick="setBTFilter('loss',this)">❌</button>
-    <button class="pill" id="btf-ft" onclick="setBTFilter('football',this)">⚽ Fútbol</button>
-    <button class="pill" id="btf-tn" onclick="setBTFilter('tennis',this)">🎾 Tenis</button>
-    <button class="pill" id="btf-05" onclick="setBTFilter('+0.5',this)">+0.5g</button>
-    <button class="pill" id="btf-15" onclick="setBTFilter('+1.5',this)">+1.5g</button>
-      <button class="pill" onclick="setBTFilter('clay',this)">🟤 Tierra</button>
-      <button class="pill" onclick="setBTFilter('grass',this)">🟢 Hierba</button>
-      <button class="pill" onclick="setBTFilter('hard',this)">🔵 Dura</button>
-      <button class="pill" onclick="setBTFilter('slam',this)">🏆 Slam</button>
-      <button class="pill" onclick="setBTFilter('atp1000',this)">M1000</button>
-      <button class="pill" onclick="setBTFilter('atp500',this)">500</button>
-      <button class="pill" onclick="setBTFilter('atp250',this)">250</button>
-      <button class="pill" onclick="setBTFilter('challenger',this)">Chal.</button>
-      <button class="pill" onclick="setBTFilter('itf',this)">ITF</button>
-    </div>
-    <div id="bt-round-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
-      <button class="pill active" onclick="setBTRound('all',this)">Todas las rondas</button>
-      <button class="pill" onclick="setBTRound('f',this)">Final</button>
-      <button class="pill" onclick="setBTRound('sf',this)">SF</button>
-      <button class="pill" onclick="setBTRound('qf',this)">QF</button>
-      <button class="pill" onclick="setBTRound('r16',this)">R16</button>
-      <button class="pill" onclick="setBTRound('r32',this)">R32</button>
-      <button class="pill" onclick="setBTRound('early',this)">Early (R32–R128)</button>
-      <button class="pill" onclick="setBTRound('late',this)">Late (R16–F)</button>
-      <button class="pill" onclick="setBTRound('q',this)">Qualif.</button>
-    </div>
-    <div id="bt-time-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
-      <button class="pill active" onclick="setBTTime('all',this)">Todo el tiempo</button>
-      <button class="pill" onclick="setBTTime('today',this)">Hoy</button>
-      <button class="pill" onclick="setBTTime('week',this)">Esta semana</button>
-      <button class="pill" onclick="setBTTime('month',this)">Este mes</button>
-      <button class="pill" onclick="setBTTime('last30',this)">Últimos 30d</button>
-      <button class="pill" onclick="setBTTime('last90',this)">Últimos 90d</button>
-      <button class="pill" onclick="setBTTime('mon',this)">Lun</button>
-      <button class="pill" onclick="setBTTime('tue',this)">Mar</button>
-      <button class="pill" onclick="setBTTime('wed',this)">Mié</button>
-      <button class="pill" onclick="setBTTime('thu',this)">Jue</button>
-      <button class="pill" onclick="setBTTime('fri',this)">Vie</button>
-      <button class="pill" onclick="setBTTime('sat',this)">Sáb</button>
-      <button class="pill" onclick="setBTTime('sun',this)">Dom</button>
-      <button class="pill" onclick="setBTTime('jan',this)">Ene</button>
-      <button class="pill" onclick="setBTTime('feb',this)">Feb</button>
-      <button class="pill" onclick="setBTTime('mar',this)">Mar</button>
-      <button class="pill" onclick="setBTTime('apr',this)">Abr</button>
-      <button class="pill" onclick="setBTTime('may',this)">May</button>
-      <button class="pill" onclick="setBTTime('jun',this)">Jun</button>
-      <button class="pill" onclick="setBTTime('jul',this)">Jul</button>
-      <button class="pill" onclick="setBTTime('aug',this)">Ago</button>
-      <button class="pill" onclick="setBTTime('sep',this)">Sep</button>
-      <button class="pill" onclick="setBTTime('oct',this)">Oct</button>
-      <button class="pill" onclick="setBTTime('nov',this)">Nov</button>
-      <button class="pill" onclick="setBTTime('dec',this)">Dic</button>
-    </div>
-    <!-- cierre original del contenedor bt-filters reemplazado arriba -->
-    <div style="display:none">
-    <button class="pill" id="btf-brk" onclick="setBTFilter('break',this)">Roturas</button>
+  <!-- Fila 1: Tipo/resultado -->
+  <div class="sim-filters" id="bt-type-filters" style="margin-bottom:6px">
+    <button class="pill active" onclick="setBTFilter('all',this)">Todas</button>
+    <button class="pill" onclick="setBTFilter('win',this)">✅ Win</button>
+    <button class="pill" onclick="setBTFilter('loss',this)">❌ Loss</button>
+    <button class="pill" onclick="setBTFilter('football',this)">⚽ Fútbol</button>
+    <button class="pill" onclick="setBTFilter('tennis',this)">🎾 Tenis</button>
+    <button class="pill" onclick="setBTFilter('+0.5',this)">+0.5g</button>
+    <button class="pill" onclick="setBTFilter('+1.5',this)">+1.5g</button>
+    <button class="pill" onclick="setBTFilter('break',this)">Roturas</button>
+    <button class="pill" onclick="setBTFilter('set1',this)">Set1</button>
+  </div>
+  <!-- Fila 2: Superficie -->
+  <div class="sim-filters" id="bt-surf-filters" style="margin-bottom:6px">
+    <button class="pill active" onclick="setBTSurf('all',this)">Todas superficies</button>
+    <button class="pill" onclick="setBTSurf('clay',this)">🟤 Tierra</button>
+    <button class="pill" onclick="setBTSurf('grass',this)">🟢 Hierba</button>
+    <button class="pill" onclick="setBTSurf('hard',this)">🔵 Dura</button>
+    <button class="pill" onclick="setBTSurf('hard_i',this)">🔵 Dura cubierta</button>
+  </div>
+  <!-- Fila 3: Tier -->
+  <div class="sim-filters" id="bt-tier-filters" style="margin-bottom:6px">
+    <button class="pill active" onclick="setBTTier('all',this)">Todos los niveles</button>
+    <button class="pill" onclick="setBTTier('slam',this)">🏆 Slam</button>
+    <button class="pill" onclick="setBTTier('atp1000',this)">M1000</button>
+    <button class="pill" onclick="setBTTier('atp500',this)">500</button>
+    <button class="pill" onclick="setBTTier('atp250',this)">250</button>
+    <button class="pill" onclick="setBTTier('challenger',this)">Challenger</button>
+    <button class="pill" onclick="setBTTier('wta125',this)">WTA125</button>
+    <button class="pill" onclick="setBTTier('itf',this)">ITF</button>
+  </div>
+  <!-- Fila 4: Ronda -->
+  <div id="bt-round-filters" class="sim-filters" style="margin-bottom:6px">
+    <button class="pill active" onclick="setBTRound('all',this)">Todas las rondas</button>
+    <button class="pill" onclick="setBTRound('f',this)">Final</button>
+    <button class="pill" onclick="setBTRound('sf',this)">SF</button>
+    <button class="pill" onclick="setBTRound('qf',this)">QF</button>
+    <button class="pill" onclick="setBTRound('r16',this)">R16</button>
+    <button class="pill" onclick="setBTRound('r32',this)">R32</button>
+    <button class="pill" onclick="setBTRound('early',this)">Early (R64–R32)</button>
+    <button class="pill" onclick="setBTRound('late',this)">Late (R16–F)</button>
+    <button class="pill" onclick="setBTRound('q',this)">Qualif.</button>
+  </div>
+  <!-- Fila 5: Tiempo -->
+  <div id="bt-time-filters" class="sim-filters" style="margin-bottom:10px">
+    <button class="pill active" onclick="setBTTime('all',this)">Todo el tiempo</button>
+    <button class="pill" onclick="setBTTime('today',this)">Hoy</button>
+    <button class="pill" onclick="setBTTime('week',this)">Esta semana</button>
+    <button class="pill" onclick="setBTTime('month',this)">Este mes</button>
+    <button class="pill" onclick="setBTTime('last30',this)">Últimos 30d</button>
+    <button class="pill" onclick="setBTTime('last90',this)">Últimos 90d</button>
+    <button class="pill" onclick="setBTTime('mon',this)">Lun</button>
+    <button class="pill" onclick="setBTTime('tue',this)">Mar</button>
+    <button class="pill" onclick="setBTTime('wed',this)">Mié</button>
+    <button class="pill" onclick="setBTTime('thu',this)">Jue</button>
+    <button class="pill" onclick="setBTTime('fri',this)">Vie</button>
+    <button class="pill" onclick="setBTTime('sat',this)">Sáb</button>
+    <button class="pill" onclick="setBTTime('sun',this)">Dom</button>
+    <button class="pill" onclick="setBTTime('jan',this)">Ene</button>
+    <button class="pill" onclick="setBTTime('feb',this)">Feb</button>
+    <button class="pill" onclick="setBTTime('mar',this)">Mar</button>
+    <button class="pill" onclick="setBTTime('apr',this)">Abr</button>
+    <button class="pill" onclick="setBTTime('may',this)">May</button>
+    <button class="pill" onclick="setBTTime('jun',this)">Jun</button>
+    <button class="pill" onclick="setBTTime('jul',this)">Jul</button>
+    <button class="pill" onclick="setBTTime('aug',this)">Ago</button>
+    <button class="pill" onclick="setBTTime('sep',this)">Sep</button>
+    <button class="pill" onclick="setBTTime('oct',this)">Oct</button>
+    <button class="pill" onclick="setBTTime('nov',this)">Nov</button>
+    <button class="pill" onclick="setBTTime('dec',this)">Dic</button>
   </div>
 
   <!-- Lista BT -->
@@ -1421,8 +1432,10 @@ function renderOddsBands(){
 
 let btData = JSON.parse(ls('r25_bt') || '[]');   // array de entradas BT
 let btFilter = 'all';
-  let btTimeFilter = 'all';
-  let btRoundFilter = 'all';
+let btSurf = 'all';
+let btTier = 'all';
+let btRoundFilter = 'all';
+let btTimeFilter = 'all';
 const BT_VERSION = 1;
 
 // Cuotas por defecto para backtest
@@ -1652,80 +1665,80 @@ function exportBT() {
 
 function setBTFilter(f, el) {
   btFilter = f;
-  document.querySelectorAll('#page-bt .pill').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#bt-type-filters .pill').forEach(b => b.classList.remove('active'));
   if (el) el.classList.add('active');
   renderBT();
 }
-  function setBTTime(v, el) {
-    btTimeFilter = v;
-    document.querySelectorAll('#bt-time-filters .pill').forEach(p => p.classList.remove('active'));
-    if(el) el.classList.add('active');
-    renderBT();
-  }
-  function setBTRound(v, el) {
-    btRoundFilter = v;
-    document.querySelectorAll('#bt-round-filters .pill').forEach(p => p.classList.remove('active'));
-    if(el) el.classList.add('active');
-    renderBT();
-  }
+function setBTSurf(v, el) {
+  btSurf = v;
+  document.querySelectorAll('#bt-surf-filters .pill').forEach(p => p.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderBT();
+}
+function setBTTier(v, el) {
+  btTier = v;
+  document.querySelectorAll('#bt-tier-filters .pill').forEach(p => p.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderBT();
+}
+function setBTTime(v, el) {
+  btTimeFilter = v;
+  document.querySelectorAll('#bt-time-filters .pill').forEach(p => p.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderBT();
+}
+function setBTRound(v, el) {
+  btRoundFilter = v;
+  document.querySelectorAll('#bt-round-filters .pill').forEach(p => p.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderBT();
+}
 
 function renderBT() {
-  // Stats globales
-  const resolved = btData.filter(b => b.outcome !== 'pending');
-  const wins    = resolved.filter(b => b.outcome === 'win').length;
-  const losses  = resolved.filter(b => b.outcome === 'loss').length;
-  const pnlTotal = resolved.reduce((a, b) => a + b.profit, 0);
-  const wr = (wins + losses) > 0 ? Math.round(wins / (wins + losses) * 100) : 0;
-
-  $i('bt-tot').textContent    = btData.length;
-  $i('bt-wins').textContent   = wins;
-  $i('bt-losses').textContent = losses;
-  const pnlEl = $i('bt-pnl');
-  pnlEl.textContent = (pnlTotal >= 0 ? '+' : '') + pnlTotal.toFixed(0) + '€';
-  pnlEl.style.color = pnlTotal > 0 ? 'var(--grn)' : pnlTotal < 0 ? '#ff8888' : 'var(--wht3)';
-  $i('bt-wr').textContent = wr + '% win rate (' + wins + '/' + (wins+losses) + ' resueltas)';
-  const wrBar = $i('bt-wrbar');
-  wrBar.style.width = wr + '%';
-  wrBar.style.background = wr >= 60 ? 'var(--grn)' : wr >= 45 ? 'var(--yel)' : '#ff8888';
-
-  // Gráfica P&L acumulado
-  renderBTChart();
-
-  // Filtrar lista
   const now = new Date();
+
+  // ── Aplicar TODOS los filtros combinados ────────────────────────────────
   const flt = btData.filter(b => {
-    // Filtro principal
-    if (btFilter === 'win')      { if (b.outcome !== 'win')  return false; }
+    // 1. Tipo / resultado
+    if (btFilter === 'win')       { if (b.outcome !== 'win')  return false; }
     else if (btFilter === 'loss') { if (b.outcome !== 'loss') return false; }
     else if (btFilter === 'football') { if (!b.type.startsWith('football')) return false; }
     else if (btFilter === 'tennis')   { if (!b.type.startsWith('tennis'))   return false; }
     else if (btFilter === '+0.5')     { if (b._market !== '+0.5') return false; }
     else if (btFilter === '+1.5')     { if (b._market !== '+1.5') return false; }
     else if (btFilter === 'break')    { if (b.type !== 'tennis_break') return false; }
-    else if (btFilter === 'clay')     { if (b._surface !== 'clay')  return false; }
-    else if (btFilter === 'grass')    { if (b._surface !== 'grass') return false; }
-    else if (btFilter === 'hard')     { if (b._surface !== 'hard' && b._surface !== 'hard_i') return false; }
-    else if (btFilter === 'slam')     { if (b._tier !== 'slam') return false; }
-    else if (btFilter === 'atp1000')  { if (b._tier !== 'atp1000' && b._tier !== 'wta1000') return false; }
-    else if (btFilter === 'atp500')   { if (b._tier !== 'atp500'  && b._tier !== 'wta500')  return false; }
-    else if (btFilter === 'atp250')   { if (b._tier !== 'atp250'  && b._tier !== 'wta250')  return false; }
-    else if (btFilter === 'challenger') { if (b._tier !== 'challenger') return false; }
-    else if (btFilter === 'itf')      { if (b._tier !== 'itf') return false; }
-    // Filtro de ronda
+    else if (btFilter === 'set1')     { if (b.type !== 'tennis_set1_set2' && b.type !== 'tennis_set1_match') return false; }
+
+    // 2. Superficie (independiente)
+    if (btSurf !== 'all') {
+      if (btSurf === 'hard') { if (b._surface !== 'hard' && b._surface !== 'hard_i') return false; }
+      else { if (b._surface !== btSurf) return false; }
+    }
+
+    // 3. Tier (independiente)
+    if (btTier !== 'all') {
+      if (btTier === 'atp1000') { if (b._tier !== 'atp1000' && b._tier !== 'wta1000') return false; }
+      else if (btTier === 'atp500')  { if (b._tier !== 'atp500'  && b._tier !== 'wta500')  return false; }
+      else if (btTier === 'atp250')  { if (b._tier !== 'atp250'  && b._tier !== 'wta250')  return false; }
+      else if (btTier === 'itf')     { if (b._tier !== 'itf' && b._tier !== 'itf_m' && b._tier !== 'itf_f') return false; }
+      else { if (b._tier !== btTier) return false; }
+    }
+
+    // 4. Ronda (independiente)
     if (btRoundFilter !== 'all') {
       if (btRoundFilter === 'early') { if (!['r128','r64','r32'].includes(b._round)) return false; }
-      else if (btRoundFilter === 'late') { if (!['r16','qf','sf','f'].includes(b._round)) return false; }
+      else if (btRoundFilter === 'late')  { if (!['r16','qf','sf','f'].includes(b._round)) return false; }
       else { if (b._round !== btRoundFilter) return false; }
     }
-    // Filtro temporal
+
+    // 5. Tiempo (independiente)
     if (btTimeFilter !== 'all') {
       const d = new Date(b.alertedAt);
       if (isNaN(d)) return true;
       if (btTimeFilter === 'today') {
         if (d.toDateString() !== now.toDateString()) return false;
       } else if (btTimeFilter === 'week') {
-        const msAgo = now - d;
-        if (msAgo > 7*86400000) return false;
+        if (now - d > 7*86400000) return false;
       } else if (btTimeFilter === 'month') {
         if (d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return false;
       } else if (btTimeFilter === 'last30') {
@@ -1743,13 +1756,34 @@ function renderBT() {
     return true;
   });
 
-  // Stat tiebreak: sobre los datos filtrados actualmente
+  // ── Stats sobre flt (no sobre btData completo) ──────────────────────────
+  const resolved = flt.filter(b => b.outcome !== 'pending');
+  const wins     = resolved.filter(b => b.outcome === 'win').length;
+  const losses   = resolved.filter(b => b.outcome === 'loss').length;
+  const pnlTotal = resolved.reduce((a, b) => a + b.profit, 0);
+  const wr = (wins + losses) > 0 ? Math.round(wins / (wins + losses) * 100) : 0;
+
+  $i('bt-tot').textContent    = flt.length + (flt.length < btData.length ? ' / '+btData.length : '');
+  $i('bt-wins').textContent   = wins;
+  $i('bt-losses').textContent = losses;
+  const pnlEl = $i('bt-pnl');
+  pnlEl.textContent = (pnlTotal >= 0 ? '+' : '') + pnlTotal.toFixed(0) + '€';
+  pnlEl.style.color = pnlTotal > 0 ? 'var(--grn)' : pnlTotal < 0 ? '#ff8888' : 'var(--wht3)';
+  $i('bt-wr').textContent = wr + '% win rate (' + wins + '/' + (wins+losses) + ' resueltas)';
+  const wrBar = $i('bt-wrbar');
+  wrBar.style.width = wr + '%';
+  wrBar.style.background = wr >= 60 ? 'var(--grn)' : wr >= 45 ? 'var(--yel)' : '#ff8888';
+
+  // Gráfica sobre flt
+  renderBTChart(flt);
+
+  // ── Stat tiebreak (sobre flt) ───────────────────────────────────────────
   const breakResolved = flt.filter(b => b.type === 'tennis_break' && b.outcome !== 'pending');
-  const tiebreaks = breakResolved.filter(b => b._tiebreak);
+  const tiebreaks = breakResolved.filter(b => b._tiebreak === true);
   const tbPct = breakResolved.length > 0 ? Math.round(tiebreaks.length / breakResolved.length * 100) : null;
   const tbEl = $i('bt-tiebreak');
   if (tbEl) {
-    if (tbPct !== null) {
+    if (tbPct !== null && breakResolved.length > 0) {
       const tbWins  = tiebreaks.filter(b => b.outcome === 'win').length;
       const tbLoss  = tiebreaks.filter(b => b.outcome === 'loss').length;
       const tbWrPct = tiebreaks.length > 0 ? Math.round(tbWins / tiebreaks.length * 100) : 0;
@@ -1766,6 +1800,7 @@ function renderBT() {
     }
   }
 
+  // ── Lista de registros ──────────────────────────────────────────────────
   const el = $i('bt-list');
   if (!flt.length) {
     el.innerHTML = '<div class="empty"><div class="ei">🔬</div>Sin datos para este filtro</div>';
@@ -1779,27 +1814,28 @@ function renderBT() {
     const pnlC = b.profit > 0 ? 'var(--grn)' : b.profit < 0 ? '#ff8888' : 'var(--wht4)';
     const ts = new Date(b.alertedAt).toLocaleString('es-ES', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
     const mktBadge = b._market ? '<span style="background:var(--bg4);padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px">'+b._market+'</span>' : '';
-    const SURF_LABEL={'clay':'🟤','grass':'🟢','hard':'🔵','hard_i':'🔵'};
-    const TIER_LABEL={'slam':'🏆','atp1000':'M1000','wta1000':'M1000','atp500':'ATP500','wta500':'WTA500','atp250':'ATP250','wta250':'WTA250','challenger':'Chal.','itf':'ITF','wta125':'W125'};
+    const SURF_LABEL={'clay':'🟤','grass':'🟢','hard':'🔵','hard_i':'🔵i'};
+    const TIER_LABEL={'slam':'🏆','atp1000':'M1000','wta1000':'W1000','atp500':'ATP500','wta500':'WTA500','atp250':'ATP250','wta250':'WTA250','challenger':'Chal.','itf':'ITF','itf_m':'ITF-M','itf_f':'ITF-F','wta125':'W125','wta_other':'WTA','atp_other':'ATP'};
     const ROUND_LABEL={'f':'Final','sf':'SF','qf':'QF','r16':'R16','r32':'R32','r64':'R64','r128':'R128','q':'Qual.'};
-    const surfBadge = b._surface ? '<span style="font-size:8px;margin-right:3px" title="'+b._surface+'">'+(SURF_LABEL[b._surface]||'')+'</span>' : '';
+    const surfBadge = b._surface ? '<span style="font-size:9px;margin-right:3px" title="'+b._surface+'">'+(SURF_LABEL[b._surface]||b._surface)+'</span>' : '';
     const tierBadge = b._tier ? '<span style="background:var(--bg4);padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px;color:var(--wht3)">'+(TIER_LABEL[b._tier]||b._tier)+'</span>' : '';
     const roundBadge = b._round ? '<span style="background:rgba(255,200,50,.12);color:#ffc832;padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px">'+(ROUND_LABEL[b._round]||b._round)+'</span>' : '';
+    const tbBadge = b._tiebreak === true ? '<span style="background:rgba(255,230,0,.12);color:var(--yel);padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px">TB</span>' : '';
     return '<div class="sim-row ' + oc + '">'
       + '<div class="sim-top"><div class="sim-match">' + ico + ' ' + b.match + '</div>'
       + '<div style="text-align:right"><div class="sim-outcome ' + oc + '">' + ocL + '</div>'
       + '<div style="font-family:IBM Plex Mono,monospace;font-size:12px;font-weight:700;color:' + pnlC + ';margin-top:2px">' + pnlS + '</div></div></div>'
-      + '<div class="sim-detail">' + surfBadge + tierBadge + roundBadge + mktBadge + b.detail + '</div>'
+      + '<div class="sim-detail">' + surfBadge + tierBadge + roundBadge + tbBadge + mktBadge + b.detail + '</div>'
       + '<div class="sim-detail" style="margin-top:3px;color:var(--wht4)">' + ts
       + ' · @' + b.odds + 'x · ' + b.stake + '€</div>'
       + '</div>';
   }).join('');
 }
-
-function renderBTChart() {
+function renderBTChart(filteredData) {
   const svg = $i('bt-chart');
   if (!svg) return;
-  const resolved = [...btData].filter(b => b.outcome !== 'pending').reverse(); // cronológico
+  const source = filteredData || btData;
+  const resolved = [...source].filter(b => b.outcome !== 'pending').reverse(); // cronológico
   if (resolved.length < 2) {
     svg.innerHTML = '<text x="150" y="44" text-anchor="middle" fill="#2c4560" font-size="9" font-family="IBM Plex Mono">Sin suficientes datos</text>';
     return;
