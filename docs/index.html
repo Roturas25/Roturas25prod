@@ -793,7 +793,8 @@ async function checkServer(){
     const r=await fetch(SERVER+'/health',{signal:AbortSignal.timeout(8000)});
     const d=await r.json();
     srvOk=true; setSrv('ok');
-    $i('srvStatus').innerHTML='✓ Conectado &nbsp;·&nbsp; Football: '+(d.football?'<span style="color:var(--grn)">✓</span>':'<span style="color:var(--red)">✗ falta FOOTBALL_KEY</span>')+' &nbsp;·&nbsp; Tennis: '+(d.tennis?'<span style="color:var(--grn)">✓</span>':'<span style="color:var(--red)">✗ falta TENNIS_KEY</span>')+' &nbsp;·&nbsp; Polls: '+(d.stats?.pollCount||0)+' &nbsp;·&nbsp; Alertas enviadas: '+(d.stats?.alertsSent||0);
+    const _pendTxt=d.pendingCount>0?' &nbsp;·&nbsp; <span style="color:var(--yel)">⏳ '+d.pendingCount+' pendientes</span> <span style="color:var(--dim)">(check en '+Math.floor((d.nextResolveIn||0)/60)+'m)</span>':' &nbsp;·&nbsp; <span style="color:var(--grn)">✓ Todo resuelto</span>';
+    $i('srvStatus').innerHTML='✓ Conectado &nbsp;·&nbsp; Football: '+(d.football?'<span style="color:var(--grn)">✓</span>':'<span style="color:var(--red)">✗ falta FOOTBALL_KEY</span>')+' &nbsp;·&nbsp; Tennis: '+(d.tennis?'<span style="color:var(--grn)">✓</span>':'<span style="color:var(--red)">✗ falta TENNIS_KEY</span>')+' &nbsp;·&nbsp; Polls: '+(d.stats?.pollCount||0)+' &nbsp;·&nbsp; Alertas enviadas: '+(d.stats?.alertsSent||0)+_pendTxt;
     $i('setupBanner').style.display='none';
     $i('srvBanner').style.display='flex';
     // update displayed odds range
