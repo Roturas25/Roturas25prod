@@ -1668,28 +1668,6 @@ function renderBT() {
   pnlEl.textContent = (pnlTotal >= 0 ? '+' : '') + pnlTotal.toFixed(0) + '€';
   pnlEl.style.color = pnlTotal > 0 ? 'var(--grn)' : pnlTotal < 0 ? '#ff8888' : 'var(--wht3)';
   $i('bt-wr').textContent = wr + '% win rate (' + wins + '/' + (wins+losses) + ' resueltas)';
-  // Stat tiebreak: sobre los datos filtrados actualmente
-  const breakResolved = flt.filter(b => b.type === 'tennis_break' && b.outcome !== 'pending');
-  const tiebreaks = breakResolved.filter(b => b._tiebreak);
-  const tbPct = breakResolved.length > 0 ? Math.round(tiebreaks.length / breakResolved.length * 100) : null;
-  const tbEl = $i('bt-tiebreak');
-  if (tbEl) {
-    if (tbPct !== null) {
-      const tbWins  = tiebreaks.filter(b => b.outcome === 'win').length;
-      const tbLoss  = tiebreaks.filter(b => b.outcome === 'loss').length;
-      const tbWrPct = tiebreaks.length > 0 ? Math.round(tbWins / tiebreaks.length * 100) : 0;
-      tbEl.innerHTML = '🔀 Sets con tiebreak: <strong style="color:var(--yel)">' + tbPct + '%</strong>'
-        + ' <span style="opacity:.5;font-size:10px">(' + tiebreaks.length + '/' + breakResolved.length + ')</span>'
-        + (tiebreaks.length > 0
-          ? '<div style="margin-top:3px">Tiebreaks ganados: <strong style="color:var(--grn)">' + tbWins + '</strong>'
-            + ' · perdidos: <strong style="color:#ff8888">' + tbLoss + '</strong>'
-            + ' · win rate: <strong style="color:var(--yel)">' + tbWrPct + '%</strong></div>'
-          : '');
-      tbEl.style.display = 'block';
-    } else {
-      tbEl.style.display = 'none';
-    }
-  }
   const wrBar = $i('bt-wrbar');
   wrBar.style.width = wr + '%';
   wrBar.style.background = wr >= 60 ? 'var(--grn)' : wr >= 45 ? 'var(--yel)' : '#ff8888';
@@ -1748,6 +1726,29 @@ function renderBT() {
     }
     return true;
   });
+
+  // Stat tiebreak: sobre los datos filtrados actualmente
+  const breakResolved = flt.filter(b => b.type === 'tennis_break' && b.outcome !== 'pending');
+  const tiebreaks = breakResolved.filter(b => b._tiebreak);
+  const tbPct = breakResolved.length > 0 ? Math.round(tiebreaks.length / breakResolved.length * 100) : null;
+  const tbEl = $i('bt-tiebreak');
+  if (tbEl) {
+    if (tbPct !== null) {
+      const tbWins  = tiebreaks.filter(b => b.outcome === 'win').length;
+      const tbLoss  = tiebreaks.filter(b => b.outcome === 'loss').length;
+      const tbWrPct = tiebreaks.length > 0 ? Math.round(tbWins / tiebreaks.length * 100) : 0;
+      tbEl.innerHTML = '🔀 Sets con tiebreak: <strong style="color:var(--yel)">' + tbPct + '%</strong>'
+        + ' <span style="opacity:.5;font-size:10px">(' + tiebreaks.length + '/' + breakResolved.length + ')</span>'
+        + (tiebreaks.length > 0
+          ? '<div style="margin-top:3px">Tiebreaks ganados: <strong style="color:var(--grn)">' + tbWins + '</strong>'
+            + ' · perdidos: <strong style="color:#ff8888">' + tbLoss + '</strong>'
+            + ' · win rate: <strong style="color:var(--yel)">' + tbWrPct + '%</strong></div>'
+          : '');
+      tbEl.style.display = 'block';
+    } else {
+      tbEl.style.display = 'none';
+    }
+  }
 
   const el = $i('bt-list');
   if (!flt.length) {
