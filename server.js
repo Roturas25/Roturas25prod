@@ -281,6 +281,25 @@ function getTier(s){
   return 'atp_other';
 }
 
+// Normaliza el valor de ronda devuelto por AllSportsAPI
+function normalizeRound(raw) {
+  if (!raw || !raw.trim()) return null;
+  const r = raw.toLowerCase().trim()
+    .replace(/-.*$/, '')   // quitar sufijos tipo "- ITF M25 Wichita"
+    .trim();
+  if (r.includes('final') && (r.includes('quarter')||r.includes('1/4'))) return 'qf';
+  if (r.includes('final') && (r.includes('semi')||r.includes('1/2')))    return 'sf';
+  if (r==='final'||r==='the final') return 'f';
+  if (r.includes('1/8')||r.includes('round of 16')||r.includes('r16'))   return 'r16';
+  if (r.includes('1/16')||r.includes('round of 32')||r.includes('r32'))  return 'r32';
+  if (r.includes('1/32')||r.includes('round of 64')||r.includes('r64'))  return 'r64';
+  if (r.includes('1/64')||r.includes('round of 128')||r.includes('r128')) return 'r128';
+  if (r.includes('qualif')||r.includes('qual.'))                          return 'q';
+  if (r.includes('round robin')||r.includes('group'))                     return 'rr';
+  if (r.match(/round (\d+)/)) return 'r' + r.match(/round (\d+)/)[1];
+  return raw.trim().slice(0, 20); // fallback: valor literal truncado
+}
+
 // Superficie: primero busca en el cache del API, luego heurístico por nombre
 function getSurface(trn, country, leagueKey){
   // Fuente 1: cache directo de AllSportsAPI Countries (league_surface)
@@ -318,6 +337,7 @@ function normT(e){
   const cat=getCat(_trnFull);
   const tier=getTier(e.league_name||'');
   const surface=getSurface(e.league_name||'', e.country_name||'', e.league_key);
+  const round=normalizeRound(e.league_round||'');
   const{o1,o2}=getMatchOdds(e);
   const scores=e.scores||[];
   const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
@@ -359,7 +379,7 @@ function normT(e){
     }
   }
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,trn:e.league_name||'Torneo',
+  return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
     curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2};
@@ -368,11 +388,12 @@ function normTUp(e){
   const cat=getCat((e.country_name||'')+' '+(e.league_name||''));
   const tier=getTier(e.league_name||'');
   const surface=getSurface(e.league_name||'', e.country_name||'', e.league_key);
+  const round=normalizeRound(e.league_round||'');
   let dt; try{dt=new Date(`${e.event_date}T${e.event_time||'00:00'}:00`);}catch{dt=new Date();}
   if(isNaN(dt.getTime())) dt=new Date();
   const{o1,o2}=getMatchOdds(e);
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  return{id:'tdu_'+e.event_key,_key:String(e.event_key),cat,tier,surface,trn:e.league_name||'Torneo',
+  return{id:'tdu_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',o1,o2,mon,hasOdds:o1!=null||o2!=null,
     localT:dt.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Madrid'}),
     localD:dt.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'2-digit'}),
@@ -467,7 +488,7 @@ function checkTennisAlerts(live){
       alertedAt:nowISO(),resolved:false,outcome:null,
       _eventId:m.id,_setNum:m.curSetNum,_favIs:favIs,
       _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],
-      _favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_liveO1:m.o1,_liveO2:m.o2});
+      _favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2});
     if(simAlerts.length>500) simAlerts.length=500;
     const setsStr=m.sets1.map((s,i)=>`${s}-${m.sets2[i]}`).join(' · ');
     sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak ${m.curSetNum}º set: ${m.g1}-${m.g2} · ${favName} roto\nFav @${favO!=null?favO+'x':'n/d'} → apostar gana set`);
@@ -489,14 +510,14 @@ function checkSet1Loss(live){
         simAlerts.unshift({id:ks2,type:'tennis_set1_set2',match:`${m.p1} vs ${m.p2}`,
           detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana S2?`,
           alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_setNum:2,_favIs:favIs,
-          _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface});
+          _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round});
         if(simAlerts.length>500) simAlerts.length=500;
       }
       alerted.add(ksM);
       simAlerts.unshift({id:ksM,type:'tennis_set1_match',match:`${m.p1} vs ${m.p2}`,
         detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana partido?`,
         alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_favIs:favIs,
-        _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface});
+        _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round});
       if(simAlerts.length>500) simAlerts.length=500;
       sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nSet 1: ${m.sets1[0]}-${m.sets2[0]} · ${favName} pierde S1 @${favO!=null?favO+'x':'n/d'}\nApostar: gana S2 / gana partido`);
     }
