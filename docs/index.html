@@ -1017,8 +1017,8 @@ function fCardHtml(m){
     +'</div>';
   const g2i=iL&&m.min>45?'<div class="fc-g2">Goles 2ªP: '+m.g2+'</div>':'';
   const fid=ee(m.h+' vs '+m.a);
-  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1)">📝 Registrar 2 apuestas</button></div>':'';
-  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2)">📝 Registrar 2 apuestas</button></div>':''
+  const a25=m.a25&&!fbetDone(m.id,1)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1,\''+m.id+'\')">📝 Registrar 2 apuestas</button></div>':'';
+  const a67=m.a67&&!fbetDone(m.id,2)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2,\''+m.id+'\')">📝 Registrar 2 apuestas</button></div>':''
   return '<div class="card '+cls+'"><div class="fc-in"><div class="fc-time">'+th+tb+'</div><div><div class="fc-lg">'+m.league+'</div>'+teams+g2i+'</div></div>'+a25+a67+'</div>';
 }
 
@@ -1092,9 +1092,12 @@ function tCardHtml(m){
   const gCell1='<div class="tset tset-g '+gCol1+'">'+gCur1+'</div>';
   const gCell2='<div class="tset tset-g '+gCol2+'">'+gCur2+'</div>';
   // Punto del juego actual
-  const hasPt=!!(m.pt1||m.pt2);
-  const ptCell1=hasPt?'<div class="tset tset-pt">'+(m.pt1||'0')+'</div>':'';
-  const ptCell2=hasPt?'<div class="tset tset-pt">'+(m.pt2||'0')+'</div>':'';
+  // Puntos del juego actual — siempre visible (0-0 entre juegos)
+  const hasPt = !m.isUp;
+  const ptVal1 = m.pt1 || '0';
+  const ptVal2 = m.pt2 || '0';
+  const ptCell1 = hasPt ? '<div class="tset tset-pt">'+ptVal1+'</div>' : '';
+  const ptCell2 = hasPt ? '<div class="tset tset-pt">'+ptVal2+'</div>' : '';
   const r1=setsR1+gCell1+ptCell1;
   const r2=setsR2+gCell2+ptCell2;
   const o1d=m.o1!=null?'<div class="todds '+(m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'fav':'')+'">'+m.o1+'x</div>':'';
@@ -1107,7 +1110,7 @@ function tCardHtml(m){
   // scoreDetail: leyenda de columnas alineada con tc-name flex:1
   const _legSets=Array.from({length:nSets},(_,i)=>'<div class="tset" style="font-size:8px;color:var(--wht4);background:none;border:none">S'+(i+1)+'</div>').join('');
   const _legG='<div class="tset tset-g" style="font-size:8px;color:rgba(94,200,248,.5);background:none;border:none">J</div>';
-  const _legPt=hasPt?'<div class="tset tset-pt" style="font-size:8px;color:rgba(255,230,0,.5);background:none;border:none">Pt</div>':'';
+  const _legPt=!m.isUp?'':'<div class="tset tset-pt" style="font-size:8px;color:rgba(255,230,0,.5);background:none;border:none">Pt</div>';
   const scoreDetail='<div class="tc-row" style="height:13px;margin-bottom:1px">'+
     '<div class="tc-name" style="font-size:8px;color:transparent;pointer-events:none">·</div>'+
     _legSets+_legG+_legPt+
@@ -1226,6 +1229,12 @@ function saveBet(){
     if(!stake){toast('Error','Introduce la cantidad.','info');return;}
     match=autoModalData.match;
     simId=autoModalData.id||null;
+    // Guard anti-duplicado: si este simId ya está registrado, no crear otra apuesta
+    if(simId && registeredAlerts.has(simId)){
+      toast('Ya registrado','Esta apuesta ya está en el registro','info');
+      closeModal();
+      return;
+    }
     favO=autoModalData._favO||null;
     // inferir type desde simAlert type
     if(autoModalData.type==='tennis_set1_set2') type='tennis_set1_set2';
@@ -1264,29 +1273,43 @@ function saveBet(){
 }
 
 // Comprobar si ya se registraron apuestas de fútbol para esta alerta
-function fbetDone(alertKey){
+function fbetDone(matchId, half){
+  // Buscar si ya hay apuestas registradas para los simAlerts de este partido/mitad
+  const type05 = half===1 ? 'football_ht_05' : 'football_2h_05';
+  const type15 = half===1 ? 'football_ht_15' : 'football_2h_15';
+  const sim05 = simData.find(s=>s.type===type05 && s._matchId && ('fd_'+s._matchId)===matchId);
+  const sim15 = simData.find(s=>s.type===type15 && s._matchId && ('fd_'+s._matchId)===matchId);
+  if(sim05 && registeredAlerts.has(sim05.id)) return true;
+  if(sim15 && registeredAlerts.has(sim15.id)) return true;
+  // Fallback: buscar por _alertKey en bets
+  const alertKey = (half===1?'a25_':'a67_') + matchId;
   return bets.some(b=>b._alertKey===alertKey);
 }
 
 // Guardar 2 apuestas de fútbol de una vez (+0.5 y +1.5)
-function openFBotBet(matchName, half){
+function openFBotBet(matchName, half, matchId){
+  // Guard anti-duplicado
+  if(fbetDone(matchId||'', half)){
+    toast('Ya registrado', 'Estas apuestas ya están en el registro', 'info');
+    return;
+  }
   const prefix = half===1 ? '1ª' : '2ª';
-  const simId05 = simData.find(s=>(s.type==='football_ht_05'||s.type==='football_2h_05')&&s.match===matchName)?.id||null;
-  const simId15 = simData.find(s=>(s.type==='football_ht_15'||s.type==='football_2h_15')&&s.match===matchName)?.id||null;
   const type05 = half===1?'football_ht_05':'football_2h_05';
   const type15 = half===1?'football_ht_15':'football_2h_15';
-  const alertKey = (half===1?'a25_':'a67_')+'fd_'+matchName.replace(/ vs /,'_');
+  const simId05 = simData.find(s=>(s.type===type05)&&(matchId?s._matchId&&('fd_'+s._matchId)===matchId:s.match===matchName))?.id||null;
+  const simId15 = simData.find(s=>(s.type===type15)&&(matchId?s._matchId&&('fd_'+s._matchId)===matchId:s.match===matchName))?.id||null;
+  const alertKey = (half===1?'a25_':'a67_')+(matchId||matchName);
   const now = new Date();
   const dateStr = now.toLocaleDateString('es-ES')+' '+now.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
-  // Apuesta +0.5 goles
-  bets.unshift({id:Date.now(), match:matchName, odds:1.80, stake:50, type:type05,
-    outcome:'pending', profit:0, date:dateStr, _simId:simId05, _alertKey:alertKey});
-  // Apuesta +1.5 goles  
-  bets.unshift({id:Date.now()+1, match:matchName, odds:3.00, stake:25, type:type15,
-    outcome:'pending', profit:0, date:dateStr, _simId:simId15, _alertKey:alertKey});
+  bets.unshift({id:Date.now(),   match:matchName, odds:1.80, stake:50, type:type05, outcome:'pending', profit:0, date:dateStr, _simId:simId05, _alertKey:alertKey});
+  bets.unshift({id:Date.now()+1, match:matchName, odds:3.00, stake:25, type:type15, outcome:'pending', profit:0, date:dateStr, _simId:simId15, _alertKey:alertKey});
+  // Marcar ambos sims como registrados para que desaparezca el botón
+  if(simId05) registeredAlerts.add(simId05);
+  if(simId15) registeredAlerts.add(simId15);
+  lss('r25_regAlerts',[...registeredAlerts].slice(-500));
   lss('r25_bets',bets); pushFB(); renderLog(); updateStats();
   toast('✅ Apuestas registradas', matchName+' — +0.5 @1.80x (50€) y +1.5 @3.00x (25€)');
-  renderAll(); // refresca para quitar el botón
+  renderAll();
 }
 
 function inferTennisType(detail){
