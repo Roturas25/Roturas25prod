@@ -25,6 +25,58 @@ const htSnapshot        = new Map();
 const kickoffSnapshot   = new Map();
 const breakRecoveries   = new Map();
 
+// ── Firebase persistencia de estado ─────────────────────────────────────────
+const FB_URL = 'https://roturas25-default-rtdb.europe-west1.firebasedatabase.app';
+let fbSaveTimer = null;
+
+async function fbGet(path) {
+  try {
+    const d = await fetchJson(FB_URL + path + '.json');
+    return d;
+  } catch(e) { console.warn('[FB GET]', e.message); return null; }
+}
+
+async function fbPut(path, data) {
+  return new Promise((res, rej) => {
+    const body = JSON.stringify(data);
+    const url  = new URL(FB_URL + path + '.json');
+    const r = https.request({ hostname: url.hostname, path: url.pathname + url.search,
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }},
+      r => { r.resume(); r.on('end', res); });
+    r.on('error', rej); r.write(body); r.end();
+  });
+}
+
+// Guardar estado cada vez que cambia algo relevante (debounced 3s)
+function scheduleFbSave() {
+  if (fbSaveTimer) return;
+  fbSaveTimer = setTimeout(async () => {
+    fbSaveTimer = null;
+    try {
+      await fbPut('/state/alerted',  [...alerted].slice(-2000));
+      await fbPut('/state/sims',     simAlerts.slice(0, 500));
+      console.log('[FB] Estado guardado');
+    } catch(e) { console.warn('[FB SAVE]', e.message); }
+  }, 3000);
+}
+
+// Cargar estado al arrancar (evita re-enviar alertas tras redeploy)
+async function loadStateFromFB() {
+  console.log('[FB] Cargando estado previo...');
+  try {
+    const savedAlerted = await fbGet('/state/alerted');
+    if (Array.isArray(savedAlerted)) {
+      savedAlerted.forEach(k => alerted.add(k));
+      console.log('[FB] alerted restaurado:', alerted.size, 'claves');
+    }
+    const savedSims = await fbGet('/state/sims');
+    if (Array.isArray(savedSims) && savedSims.length) {
+      simAlerts.push(...savedSims);
+      console.log('[FB] simAlerts restaurado:', simAlerts.length);
+    }
+  } catch(e) { console.warn('[FB LOAD]', e.message); }
+}
+
 function todayStr()   { return new Date().toISOString().split('T')[0]; }
 function tomorrowStr(){ return new Date(Date.now()+86400000).toISOString().split('T')[0]; }
 function nowISO()     { return new Date().toISOString(); }
@@ -336,6 +388,7 @@ function checkTennisAlerts(live){
     const setsStr=m.sets1.map((s,i)=>`${s}-${m.sets2[i]}`).join(' · ');
     sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak ${m.curSetNum}º set: ${m.g1}-${m.g2} · ${favName} roto\nFav @${favO!=null?favO+'x':'n/d'} → apostar gana set`);
   });
+  scheduleFbSave();
 }
 function checkSet1Loss(live){
   live.forEach(m=>{
@@ -364,6 +417,7 @@ function checkSet1Loss(live){
       sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nSet 1: ${m.sets1[0]}-${m.sets2[0]} · ${favName} pierde S1 @${favO!=null?favO+'x':'n/d'}\nApostar: gana S2 / gana partido`);
     }
   });
+  scheduleFbSave();
 }
 function resolveTennisSims(){
   simAlerts.forEach(s=>{
@@ -392,6 +446,7 @@ function resolveTennisSims(){
       }
     }
   });
+  scheduleFbSave();
 }
 
 // ── Poll ─────────────────────────────────────────────────────────────────────
@@ -487,9 +542,10 @@ const server=http.createServer((req,res)=>{
   res.writeHead(404);res.end(JSON.stringify({error:'Not found'}));
 });
 
-server.listen(PORT,()=>{
+server.listen(PORT, async ()=>{
   console.log(`\n🎾 ROTURAS25 v6 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗ falta FOOTBALL_KEY'}  Tennis:${TENNIS_KEY?'✓':'✗ falta TENNIS_KEY'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
+  await loadStateFromFB();
   poll();
 });
