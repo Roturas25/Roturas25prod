@@ -442,6 +442,47 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
       <button class="pill" onclick="setBTFilter('atp250',this)">250</button>
       <button class="pill" onclick="setBTFilter('challenger',this)">Chal.</button>
       <button class="pill" onclick="setBTFilter('itf',this)">ITF</button>
+    </div>
+    <div id="bt-round-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+      <button class="pill active" onclick="setBTRound('all',this)">Todas las rondas</button>
+      <button class="pill" onclick="setBTRound('f',this)">Final</button>
+      <button class="pill" onclick="setBTRound('sf',this)">SF</button>
+      <button class="pill" onclick="setBTRound('qf',this)">QF</button>
+      <button class="pill" onclick="setBTRound('r16',this)">R16</button>
+      <button class="pill" onclick="setBTRound('r32',this)">R32</button>
+      <button class="pill" onclick="setBTRound('early',this)">Early (R32–R128)</button>
+      <button class="pill" onclick="setBTRound('late',this)">Late (R16–F)</button>
+      <button class="pill" onclick="setBTRound('q',this)">Qualif.</button>
+    </div>
+    <div id="bt-time-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+      <button class="pill active" onclick="setBTTime('all',this)">Todo el tiempo</button>
+      <button class="pill" onclick="setBTTime('today',this)">Hoy</button>
+      <button class="pill" onclick="setBTTime('week',this)">Esta semana</button>
+      <button class="pill" onclick="setBTTime('month',this)">Este mes</button>
+      <button class="pill" onclick="setBTTime('last30',this)">Últimos 30d</button>
+      <button class="pill" onclick="setBTTime('last90',this)">Últimos 90d</button>
+      <button class="pill" onclick="setBTTime('mon',this)">Lun</button>
+      <button class="pill" onclick="setBTTime('tue',this)">Mar</button>
+      <button class="pill" onclick="setBTTime('wed',this)">Mié</button>
+      <button class="pill" onclick="setBTTime('thu',this)">Jue</button>
+      <button class="pill" onclick="setBTTime('fri',this)">Vie</button>
+      <button class="pill" onclick="setBTTime('sat',this)">Sáb</button>
+      <button class="pill" onclick="setBTTime('sun',this)">Dom</button>
+      <button class="pill" onclick="setBTTime('jan',this)">Ene</button>
+      <button class="pill" onclick="setBTTime('feb',this)">Feb</button>
+      <button class="pill" onclick="setBTTime('mar',this)">Mar</button>
+      <button class="pill" onclick="setBTTime('apr',this)">Abr</button>
+      <button class="pill" onclick="setBTTime('may',this)">May</button>
+      <button class="pill" onclick="setBTTime('jun',this)">Jun</button>
+      <button class="pill" onclick="setBTTime('jul',this)">Jul</button>
+      <button class="pill" onclick="setBTTime('aug',this)">Ago</button>
+      <button class="pill" onclick="setBTTime('sep',this)">Sep</button>
+      <button class="pill" onclick="setBTTime('oct',this)">Oct</button>
+      <button class="pill" onclick="setBTTime('nov',this)">Nov</button>
+      <button class="pill" onclick="setBTTime('dec',this)">Dic</button>
+    </div>
+    <!-- cierre original del contenedor bt-filters reemplazado arriba -->
+    <div style="display:none">
     <button class="pill" id="btf-brk" onclick="setBTFilter('break',this)">Roturas</button>
   </div>
 
@@ -1351,6 +1392,8 @@ function renderOddsBands(){
 
 let btData = JSON.parse(ls('r25_bt') || '[]');   // array de entradas BT
 let btFilter = 'all';
+  let btTimeFilter = 'all';
+  let btRoundFilter = 'all';
 const BT_VERSION = 1;
 
 // Cuotas por defecto para backtest
@@ -1411,6 +1454,7 @@ function syncBTFromSims(sims) {
         _cat:      s._cat      || null,
         _tier:     s._tier     || null,
         _surface:  s._surface  || null,
+        _round:    s._round    || null,
         _tiebreak: s._tiebreak || false,
       };
       entry.profit = entry.outcome === 'win' ? parseFloat(((cfg.odds-1)*cfg.stake).toFixed(2))
@@ -1430,6 +1474,7 @@ function syncBTFromSims(sims) {
       if (s._tiebreak && !existing._tiebreak) { existing._tiebreak = true; changed = true; }
       if (s._tier    && !existing._tier)    { existing._tier    = s._tier;    changed = true; }
       if (s._surface && !existing._surface) { existing._surface = s._surface; changed = true; }
+      if (s._round   && !existing._round)   { existing._round   = s._round;   changed = true; }
     }
   });
 
@@ -1543,6 +1588,18 @@ function setBTFilter(f, el) {
   if (el) el.classList.add('active');
   renderBT();
 }
+  function setBTTime(v, el) {
+    btTimeFilter = v;
+    document.querySelectorAll('#bt-time-filters .pill').forEach(p => p.classList.remove('active'));
+    if(el) el.classList.add('active');
+    renderBT();
+  }
+  function setBTRound(v, el) {
+    btRoundFilter = v;
+    document.querySelectorAll('#bt-round-filters .pill').forEach(p => p.classList.remove('active'));
+    if(el) el.classList.add('active');
+    renderBT();
+  }
 
 function renderBT() {
   // Stats globales
@@ -1589,25 +1646,54 @@ function renderBT() {
   renderBTChart();
 
   // Filtrar lista
+  const now = new Date();
   const flt = btData.filter(b => {
-    if (btFilter === 'win')      return b.outcome === 'win';
-    if (btFilter === 'loss')     return b.outcome === 'loss';
-    if (btFilter === 'football') return b.type.startsWith('football');
-    if (btFilter === 'tennis')   return b.type.startsWith('tennis');
-    if (btFilter === '+0.5')     return b._market === '+0.5';
-    if (btFilter === '+1.5')     return b._market === '+1.5';
-    if (btFilter === 'break')    return b.type === 'tennis_break';
-    // Superficie
-    if (btFilter === 'clay')     return b._surface === 'clay';
-    if (btFilter === 'grass')    return b._surface === 'grass';
-    if (btFilter === 'hard')     return b._surface === 'hard' || b._surface === 'hard_i';
-    // Tier
-    if (btFilter === 'slam')     return b._tier === 'slam';
-    if (btFilter === 'atp1000')  return b._tier === 'atp1000' || b._tier === 'wta1000';
-    if (btFilter === 'atp500')   return b._tier === 'atp500'  || b._tier === 'wta500';
-    if (btFilter === 'atp250')   return b._tier === 'atp250'  || b._tier === 'wta250';
-    if (btFilter === 'challenger') return b._tier === 'challenger';
-    if (btFilter === 'itf')      return b._tier === 'itf';
+    // Filtro principal
+    if (btFilter === 'win')      { if (b.outcome !== 'win')  return false; }
+    else if (btFilter === 'loss') { if (b.outcome !== 'loss') return false; }
+    else if (btFilter === 'football') { if (!b.type.startsWith('football')) return false; }
+    else if (btFilter === 'tennis')   { if (!b.type.startsWith('tennis'))   return false; }
+    else if (btFilter === '+0.5')     { if (b._market !== '+0.5') return false; }
+    else if (btFilter === '+1.5')     { if (b._market !== '+1.5') return false; }
+    else if (btFilter === 'break')    { if (b.type !== 'tennis_break') return false; }
+    else if (btFilter === 'clay')     { if (b._surface !== 'clay')  return false; }
+    else if (btFilter === 'grass')    { if (b._surface !== 'grass') return false; }
+    else if (btFilter === 'hard')     { if (b._surface !== 'hard' && b._surface !== 'hard_i') return false; }
+    else if (btFilter === 'slam')     { if (b._tier !== 'slam') return false; }
+    else if (btFilter === 'atp1000')  { if (b._tier !== 'atp1000' && b._tier !== 'wta1000') return false; }
+    else if (btFilter === 'atp500')   { if (b._tier !== 'atp500'  && b._tier !== 'wta500')  return false; }
+    else if (btFilter === 'atp250')   { if (b._tier !== 'atp250'  && b._tier !== 'wta250')  return false; }
+    else if (btFilter === 'challenger') { if (b._tier !== 'challenger') return false; }
+    else if (btFilter === 'itf')      { if (b._tier !== 'itf') return false; }
+    // Filtro de ronda
+    if (btRoundFilter !== 'all') {
+      if (btRoundFilter === 'early') { if (!['r128','r64','r32'].includes(b._round)) return false; }
+      else if (btRoundFilter === 'late') { if (!['r16','qf','sf','f'].includes(b._round)) return false; }
+      else { if (b._round !== btRoundFilter) return false; }
+    }
+    // Filtro temporal
+    if (btTimeFilter !== 'all') {
+      const d = new Date(b.alertedAt);
+      if (isNaN(d)) return true;
+      if (btTimeFilter === 'today') {
+        if (d.toDateString() !== now.toDateString()) return false;
+      } else if (btTimeFilter === 'week') {
+        const msAgo = now - d;
+        if (msAgo > 7*86400000) return false;
+      } else if (btTimeFilter === 'month') {
+        if (d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return false;
+      } else if (btTimeFilter === 'last30') {
+        if (now - d > 30*86400000) return false;
+      } else if (btTimeFilter === 'last90') {
+        if (now - d > 90*86400000) return false;
+      } else if (['mon','tue','wed','thu','fri','sat','sun'].includes(btTimeFilter)) {
+        const days = ['sun','mon','tue','wed','thu','fri','sat'];
+        if (days[d.getDay()] !== btTimeFilter) return false;
+      } else if (['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].includes(btTimeFilter)) {
+        const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+        if (months[d.getMonth()] !== btTimeFilter) return false;
+      }
+    }
     return true;
   });
 
@@ -1626,13 +1712,15 @@ function renderBT() {
     const mktBadge = b._market ? '<span style="background:var(--bg4);padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px">'+b._market+'</span>' : '';
     const SURF_LABEL={'clay':'🟤','grass':'🟢','hard':'🔵','hard_i':'🔵'};
     const TIER_LABEL={'slam':'🏆','atp1000':'M1000','wta1000':'M1000','atp500':'ATP500','wta500':'WTA500','atp250':'ATP250','wta250':'WTA250','challenger':'Chal.','itf':'ITF','wta125':'W125'};
+    const ROUND_LABEL={'f':'Final','sf':'SF','qf':'QF','r16':'R16','r32':'R32','r64':'R64','r128':'R128','q':'Qual.'};
     const surfBadge = b._surface ? '<span style="font-size:8px;margin-right:3px" title="'+b._surface+'">'+(SURF_LABEL[b._surface]||'')+'</span>' : '';
     const tierBadge = b._tier ? '<span style="background:var(--bg4);padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px;color:var(--wht3)">'+(TIER_LABEL[b._tier]||b._tier)+'</span>' : '';
+    const roundBadge = b._round ? '<span style="background:rgba(255,200,50,.12);color:#ffc832;padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px">'+(ROUND_LABEL[b._round]||b._round)+'</span>' : '';
     return '<div class="sim-row ' + oc + '">'
       + '<div class="sim-top"><div class="sim-match">' + ico + ' ' + b.match + '</div>'
       + '<div style="text-align:right"><div class="sim-outcome ' + oc + '">' + ocL + '</div>'
       + '<div style="font-family:IBM Plex Mono,monospace;font-size:12px;font-weight:700;color:' + pnlC + ';margin-top:2px">' + pnlS + '</div></div></div>'
-      + '<div class="sim-detail">' + surfBadge + tierBadge + mktBadge + b.detail + '</div>'
+      + '<div class="sim-detail">' + surfBadge + tierBadge + roundBadge + mktBadge + b.detail + '</div>'
       + '<div class="sim-detail" style="margin-top:3px;color:var(--wht4)">' + ts
       + ' · @' + b.odds + 'x · ' + b.stake + '€</div>'
       + '</div>';
