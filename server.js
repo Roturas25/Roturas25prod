@@ -253,8 +253,15 @@ function getCat(s){
     const isW=l.includes('women')||l.includes(' w ')||/\bitf w\d/i.test(s)||/\bw\d{1,3}\b/.test(s)||l.includes('wta')||l.includes('female')||l.includes('ladies');
     return isW?'itf_f':'itf_m';
   }
-  if(l.includes('125')||l.includes('w125')) return 'wta125';
+  // WTA125 antes que WTA y antes que Challenger (torneos femeninos, nunca pueden ser challenger)
+  if(l.includes('125')||l.includes('w125')||l.includes('wta 125')) return 'wta125';
+  // Si contiene 'wta' → femenino, nunca challenger
   if(l.includes('wta')) return 'wta';
+  // Detectar femenino por otras palabras
+  const isFemale=l.includes('women')||l.includes('female')||l.includes('ladies')||l.includes(' w ')||/\bw\d{1,3}\b/.test(s);
+  // "Women Challenger" o similar → WTA125 (no existe challenger femenino masculino)
+  if(isFemale&&l.includes('challenger')) return 'wta125';
+  if(isFemale) return 'wta';
   if(l.includes('challenger')) return 'challenger';
   return 'atp';
 }
@@ -265,19 +272,23 @@ function getTier(s){
   // Grand Slams
   if(l.includes('grand slam')||l.includes('australian open')||l.includes('roland garros')||
      l.includes('wimbledon')||l.includes('us open')) return 'slam';
-  // ATP
+  // ATP Masters/500/250
   if(l.includes('masters 1000')||l.includes('atp 1000')||l.includes('atp1000')) return 'atp1000';
   if(l.includes('atp 500')||l.includes('atp500')) return 'atp500';
   if(l.includes('atp 250')||l.includes('atp250')) return 'atp250';
-  // WTA
+  // WTA — siempre antes de Challenger
   if(l.includes('wta 1000')||l.includes('wta1000')) return 'wta1000';
   if(l.includes('wta 500')||l.includes('wta500')) return 'wta500';
   if(l.includes('wta 250')||l.includes('wta250')) return 'wta250';
-  if(l.includes('125')||l.includes('w125')) return 'wta125';
-  // Otros
-  if(l.includes('challenger')) return 'challenger';
+  // WTA125 — detectar por "125", "w125", "wta 125" O por presencia de "wta"+"challenger"
+  if(l.includes('125')||l.includes('w125')||l.includes('wta 125')) return 'wta125';
+  // Si es WTA pero con "challenger" en el nombre → es WTA125 (no existe challenger femenino ATP)
+  const isFemale=l.includes('wta')||l.includes('women')||l.includes('female')||l.includes('ladies')||/\bw\d{1,3}\b/.test(s);
+  if(isFemale&&l.includes('challenger')) return 'wta125';
+  // Challenger ATP (solo masculino)
+  if(l.includes('challenger')&&!isFemale) return 'challenger';
   if(l.includes('itf')) return 'itf';
-  if(l.includes('wta')) return 'wta_other';
+  if(isFemale) return 'wta_other';
   return 'atp_other';
 }
 
