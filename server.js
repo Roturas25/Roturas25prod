@@ -234,8 +234,66 @@ function getCat(s){
   if(l.includes('challenger')) return 'challenger';
   return 'atp';
 }
+
+// Nivel del torneo (tier) a partir del nombre del torneo
+function getTier(s){
+  const l=(s||'').toLowerCase();
+  // Grand Slams
+  if(l.includes('grand slam')||l.includes('australian open')||l.includes('roland garros')||
+     l.includes('wimbledon')||l.includes('us open')) return 'slam';
+  // ATP
+  if(l.includes('masters 1000')||l.includes('atp 1000')||l.includes('atp1000')) return 'atp1000';
+  if(l.includes('atp 500')||l.includes('atp500')) return 'atp500';
+  if(l.includes('atp 250')||l.includes('atp250')) return 'atp250';
+  // WTA
+  if(l.includes('wta 1000')||l.includes('wta1000')) return 'wta1000';
+  if(l.includes('wta 500')||l.includes('wta500')) return 'wta500';
+  if(l.includes('wta 250')||l.includes('wta250')) return 'wta250';
+  if(l.includes('125')||l.includes('w125')) return 'wta125';
+  // Otros
+  if(l.includes('challenger')) return 'challenger';
+  if(l.includes('itf')) return 'itf';
+  if(l.includes('wta')) return 'wta_other';
+  return 'atp_other';
+}
+
+// Superficie a partir del nombre del torneo/país
+// AllSportsAPI no da superficie directamente — inferimos del nombre
+// Cubiertos los torneos principales del circuito ATP/WTA
+function getSurface(trn, country){
+  const l=(trn||'').toLowerCase()+' '+(country||'').toLowerCase();
+  // Clay (tierra batida) - por nombre/ubicación
+  if(l.includes('roland garros')||l.includes('monte carlo')||l.includes('monte-carlo')||
+     l.includes('madrid')||l.includes('barcelona')||l.includes('rome')||l.includes('roma')||
+     l.includes('hamburg')||l.includes('hamburg')||l.includes('estoril')||l.includes('munich')||
+     l.includes('lyon')||l.includes('bucharest')||l.includes('istanbul')||l.includes('marrakech')||
+     l.includes('geneva')||l.includes('geneve')||l.includes('nice')||l.includes('bastad')||
+     l.includes('gstaad')||l.includes('umag')||l.includes('kitzbuhel')||l.includes('clay')||
+     l.includes('tierra')||l.includes('poltu quatu')||l.includes('cordoba')||l.includes('buenos aires')||
+     l.includes('bogota')||l.includes('santiago')||l.includes('sao paulo')||l.includes('rio')||
+     l.includes('casablanca')||l.includes('rabat')||l.includes('parma')||l.includes('prague')||
+     l.includes('praga')||l.includes('varsovia')||l.includes('warsaw')||l.includes('strasbourg')||
+     l.includes('nuremberg')||l.includes('nürnberg')||l.includes('rabat')) return 'clay';
+  // Grass (hierba)
+  if(l.includes('wimbledon')||l.includes('queens')||l.includes("queen's")||l.includes('halle')||
+     l.includes('s-hertogenbosch')||l.includes('eastbourne')||l.includes('nottingham')||
+     l.includes('grass')||l.includes('hierba')||l.includes('birmingham')||l.includes('bad homburg')||
+     l.includes('mallorca')||l.includes('rosmalen')) return 'grass';
+  // Indoor hard (pista dura cubierta) — generalmente en invierno/interior
+  if(l.includes('rotterdam')||l.includes('marseille')||l.includes('metz')||l.includes('sofia')||
+     l.includes('montpellier')||l.includes('indoor')||l.includes('cubierto')||
+     l.includes('st. petersburg')||l.includes('san petersburgo')||
+     l.includes('moscow')||l.includes('moscú')||l.includes('vienna')||l.includes('wien')||
+     l.includes('paris bercy')||l.includes('paris-bercy')||l.includes('stockholm')||
+     l.includes('basilea')||l.includes('basel')||l.includes('antwerp')||l.includes('amberes')) return 'hard_i';
+  // Default: outdoor hard (la más común)
+  return 'hard';
+}
 function normT(e){
-  const cat=getCat((e.country_name||'')+' '+(e.league_name||''));
+  const _trnFull=(e.country_name||'')+' '+(e.league_name||'');
+  const cat=getCat(_trnFull);
+  const tier=getTier(e.league_name||'');
+  const surface=getSurface(e.league_name||'', e.country_name||'');
   const{o1,o2}=getMatchOdds(e);
   const scores=e.scores||[];
   const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
@@ -277,18 +335,20 @@ function normT(e){
     }
   }
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  return{id:'td_'+e.event_key,_key:String(e.event_key),cat,trn:e.league_name||'Torneo',
+  return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
     curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2};
 }
 function normTUp(e){
   const cat=getCat((e.country_name||'')+' '+(e.league_name||''));
+  const tier=getTier(e.league_name||'');
+  const surface=getSurface(e.league_name||'', e.country_name||'');
   let dt; try{dt=new Date(`${e.event_date}T${e.event_time||'00:00'}:00`);}catch{dt=new Date();}
   if(isNaN(dt.getTime())) dt=new Date();
   const{o1,o2}=getMatchOdds(e);
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  return{id:'tdu_'+e.event_key,_key:String(e.event_key),cat,trn:e.league_name||'Torneo',
+  return{id:'tdu_'+e.event_key,_key:String(e.event_key),cat,tier,surface,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',o1,o2,mon,hasOdds:o1!=null||o2!=null,
     localT:dt.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Madrid'}),
     localD:dt.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'2-digit'}),
@@ -383,7 +443,7 @@ function checkTennisAlerts(live){
       alertedAt:nowISO(),resolved:false,outcome:null,
       _eventId:m.id,_setNum:m.curSetNum,_favIs:favIs,
       _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],
-      _favO:favO,_oddsband:oddsband,_cat:m.cat,_liveO1:m.o1,_liveO2:m.o2});
+      _favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_liveO1:m.o1,_liveO2:m.o2});
     if(simAlerts.length>500) simAlerts.length=500;
     const setsStr=m.sets1.map((s,i)=>`${s}-${m.sets2[i]}`).join(' · ');
     sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak ${m.curSetNum}º set: ${m.g1}-${m.g2} · ${favName} roto\nFav @${favO!=null?favO+'x':'n/d'} → apostar gana set`);
@@ -405,14 +465,14 @@ function checkSet1Loss(live){
         simAlerts.unshift({id:ks2,type:'tennis_set1_set2',match:`${m.p1} vs ${m.p2}`,
           detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana S2?`,
           alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_setNum:2,_favIs:favIs,
-          _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat});
+          _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface});
         if(simAlerts.length>500) simAlerts.length=500;
       }
       alerted.add(ksM);
       simAlerts.unshift({id:ksM,type:'tennis_set1_match',match:`${m.p1} vs ${m.p2}`,
         detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana partido?`,
         alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_favIs:favIs,
-        _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat});
+        _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface});
       if(simAlerts.length>500) simAlerts.length=500;
       sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nSet 1: ${m.sets1[0]}-${m.sets2[0]} · ${favName} pierde S1 @${favO!=null?favO+'x':'n/d'}\nApostar: gana S2 / gana partido`);
     }
