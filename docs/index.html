@@ -791,7 +791,8 @@ function checkNewAlerts(sims){
   const pending=sims.filter(s=>!lastAlertIds.has(s.id));
   pending.forEach(s=>{
     lastAlertIds.add(s.id);
-    // Abrir modal automáticamente para la primera alerta nueva
+    // No abrir modal para alertas informativas (break recuperado)
+    if(s.type==='tennis_recovery') return;
     if(!$i('ov').classList.contains('open')){
       openAutoModal(s);
     }
@@ -1348,6 +1349,8 @@ function syncBTFromSims(sims) {
   let changed = false;
 
   sims.forEach(s => {
+    // Alertas informativas: no van al backtest
+    if (s.type === 'tennis_recovery') return;
     // Solo tipos que queremos en backtest
     const cfg = simTypeToBTOdds(s.type, o);
     if (!cfg) return;
@@ -1564,7 +1567,7 @@ function simRowHtml(s){
   const favIs=s._favIs;
   const alertO=favIs==='First Player'?(s._liveO1||s._favO):(s._liveO2||s._favO);
   const oStr=alertO?'<span style="color:var(--grn);margin-left:6px">@'+alertO+'x</span>':'';
-  const regBtn=!s.resolved?'<button class="abtn" style="margin-top:6px;font-size:10px" onclick="openAutoModalById(\''+(s.id||'')+'\')" >📝 Registrar</button>':'';
+  const regBtn=(!s.resolved&&s.type!=='tennis_recovery')?'<button class="abtn" style="margin-top:6px;font-size:10px" onclick="openAutoModalById(\''+(s.id||'')+'\')" >📝 Registrar</button>':'';
   return '<div class="sim-row '+oc+'">'
     +'<div class="sim-top"><div class="sim-match">'+ico+' '+s.match+oStr+'</div><div class="sim-outcome '+oc+'">'+ocL+'</div></div>'
     +'<div class="sim-detail">'+s.detail.replace(/·/g,' · ')+'</div>'
@@ -1632,7 +1635,7 @@ function renderHist(){
       +'<div class="sim-detail" style="margin-top:3px;color:var(--wht4)">'+ts
       +(s.resolvedAt?' · Resuelto: '+new Date(s.resolvedAt).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')
       +'</div>'
-      +(hasBet?'':'<div style="margin-top:5px"><button class="logbtn g" style="font-size:9px;padding:3px 10px" onclick="openAutoModalById(\'' + ee(s.id) + '\')">📝 Registrar apuesta</button></div>')
+      +(hasBet||s.type==='tennis_recovery'?'':'<div style="margin-top:5px"><button class="logbtn g" style="font-size:9px;padding:3px 10px" onclick="openAutoModalById(\'' + ee(s.id) + '\')">📝 Registrar apuesta</button></div>')
       +'</div>';
   }).join('');
 }
