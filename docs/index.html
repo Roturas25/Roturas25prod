@@ -412,6 +412,7 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
     </div>
     <div style="background:var(--bg4);border-radius:3px;height:5px;margin-bottom:6px"><div id="bt-wrbar" style="height:5px;border-radius:3px;width:0%;background:var(--grn);transition:width .4s"></div></div>
     <div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--wht3);text-align:right" id="bt-wr">0% win rate</div>
+  <div id="bt-tiebreak" style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--wht3);margin-top:6px;padding:6px 10px;background:rgba(255,230,0,.05);border:1px solid rgba(255,230,0,.15);border-radius:4px;display:none"></div>
   </div>
 
   <!-- Gráfica P&L acumulado -->
@@ -1375,6 +1376,7 @@ function syncBTFromSims(sims) {
         _league: s._league || null,
         _favO:   s._favO   || null,
         _cat:    s._cat    || null,
+        _tiebreak: s._tiebreak || false,
       };
       entry.profit = entry.outcome === 'win' ? parseFloat(((cfg.odds-1)*cfg.stake).toFixed(2))
                    : entry.outcome === 'loss' ? -cfg.stake : 0;
@@ -1387,6 +1389,7 @@ function syncBTFromSims(sims) {
       existing.profit = existing.outcome === 'win'
         ? parseFloat(((existing.odds-1)*existing.stake).toFixed(2))
         : -existing.stake;
+      if (s._tiebreak) existing._tiebreak = true;
       changed = true;
     }
   });
@@ -1470,6 +1473,20 @@ function renderBT() {
   pnlEl.textContent = (pnlTotal >= 0 ? '+' : '') + pnlTotal.toFixed(0) + '€';
   pnlEl.style.color = pnlTotal > 0 ? 'var(--grn)' : pnlTotal < 0 ? '#ff8888' : 'var(--wht3)';
   $i('bt-wr').textContent = wr + '% win rate (' + wins + '/' + (wins+losses) + ' resueltas)';
+  // Stat tiebreak: % de sets con break-alerta que llegan a tiebreak
+  const breakResolved = btData.filter(b => b.type === 'tennis_break' && b.outcome !== 'pending');
+  const tiebreaks = breakResolved.filter(b => b._tiebreak);
+  const tbPct = breakResolved.length > 0 ? Math.round(tiebreaks.length / breakResolved.length * 100) : null;
+  const tbEl = $i('bt-tiebreak');
+  if (tbEl) {
+    if (tbPct !== null) {
+      tbEl.innerHTML = '🔀 Tiebreak en sets apostados: <strong style="color:var(--yel)">' + tbPct + '%</strong>'
+        + ' <span style="opacity:.5;font-size:10px">(' + tiebreaks.length + '/' + breakResolved.length + ' sets)</span>';
+      tbEl.style.display = 'block';
+    } else {
+      tbEl.style.display = 'none';
+    }
+  }
   const wrBar = $i('bt-wrbar');
   wrBar.style.width = wr + '%';
   wrBar.style.background = wr >= 60 ? 'var(--grn)' : wr >= 45 ? 'var(--yel)' : '#ff8888';
