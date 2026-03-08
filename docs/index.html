@@ -382,6 +382,7 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:var(--wht)">🔬 Backtesting automático</div>
     <button onclick="clearBT()" style="background:rgba(255,85,85,.08);border:1px solid rgba(255,85,85,.2);color:#ff8888;padding:5px 10px;font-family:IBM Plex Mono,monospace;font-size:9px;cursor:pointer;border-radius:3px;text-transform:uppercase">Reset</button>
+    <button onclick="exportBT()" style="background:transparent;border:1px solid rgba(94,200,248,.3);color:var(--blu);padding:6px 14px;font-family:Oswald,sans-serif;font-size:11px;font-weight:600;cursor:pointer;border-radius:var(--r);text-transform:uppercase">⬇ Exportar</button>
   </div>
   <div style="background:var(--bg3);border:1px solid rgba(94,200,248,.2);border-radius:var(--r);padding:11px 12px;margin-bottom:12px;font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--wht3);line-height:1.7">
     Registra automáticamente cada alerta como si hubieras apostado, con las cuotas configuradas.<br>
@@ -818,6 +819,25 @@ async function initFB(){
   try{
     await fetch(FB_URL+'/ping.json',{method:'PUT',body:JSON.stringify(Date.now())});
     fbOk=true; $i('fbStatus').textContent='Conectado ✓'; $i('fbStatus').style.color='var(--grn)';
+    // Restaurar btData desde Firebase si localStorage está vacío o tiene pocos registros
+    if (btData.length < 2) {
+      try {
+        const rbt = await fetch(FB_URL+'/btdata.json');
+        if (rbt.ok) {
+          const dbt = await rbt.json();
+          if (dbt && typeof dbt === 'object') {
+            const restored = Object.values(dbt).sort((a,b)=>new Date(b.alertedAt)-new Date(a.alertedAt));
+            if (restored.length > btData.length) {
+              btData = restored;
+              _migrateBTOdds();
+              lss('r25_bt', btData);
+              console.log('[BT] Restaurado desde Firebase:', btData.length, 'registros');
+              if ($i('page-bt')?.classList.contains('active')) renderBT();
+            }
+          }
+        }
+      } catch(e) { console.warn('[BT FB restore]', e.message); }
+    }
     clearInterval(fbPT);
     fbPT=setInterval(async()=>{
       try{const r=await fetch(FB_URL+'/bets.json');if(!r.ok)return;const d=await r.json();if(!d)return;
@@ -1401,10 +1421,25 @@ function syncBTFromSims(sims) {
   });
 
   if (changed) {
-    if (btData.length > 1000) btData.length = 1000;
+    if (btData.length > 5000) btData.length = 5000;
     lss('r25_bt', btData);
+    pushBTtoFB();
     if ($i('page-bt')?.classList.contains('active')) renderBT();
   }
+}
+
+// Sincronizar btData con Firebase para persistencia permanente
+let _btFbTimer = null;
+function pushBTtoFB() {
+  if (!fbOk) return;
+  clearTimeout(_btFbTimer);
+  _btFbTimer = setTimeout(async () => {
+    try {
+      const o = {};
+      btData.slice(0, 1000).forEach((b, i) => { o['b' + String(i).padStart(4,'0')] = b; });
+      await fetch(FB_URL + '/btdata.json', {method:'PUT', body: JSON.stringify(o)});
+    } catch(e) {}
+  }, 2000);
 }
 
 // Migración retroactiva: actualiza cuotas antiguas a los valores correctos
@@ -1455,6 +1490,22 @@ function clearBT() {
   btData = [];
   lss('r25_bt', btData);
   renderBT();
+}
+
+function exportBT() {
+  const out = {
+    exportedAt: new Date().toISOString(),
+    totalRecords: btData.length,
+    data: btData
+  };
+  const blob = new Blob([JSON.stringify(out, null, 2)], {type:'application/json'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = 'roturas25_backtest_' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Exportado', btData.length + ' registros descargados');
 }
 
 function setBTFilter(f, el) {
