@@ -142,7 +142,7 @@ function checkFootballAlerts(){
       simAlerts.unshift({id:k25+'_05',type:'football_ht_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:1});
       simAlerts.unshift({id:k25+'_15',type:'football_ht_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:1});
       if(simAlerts.length>500) simAlerts.length=500;
-      sendTG(`⚽ ROTURAS25 — FÚTBOL 1ª PARTE\n━━━━━━━━━━━━━━━━━━━━\n${m.league}\n${m.h} vs ${m.a}\n━━━━━━━━━━━━━━━━━━━━\n⏱ ~Min.${m.min}\n→ APUESTA 1: +0.5 goles 1ªP · 50€\n→ APUESTA 2: +1.5 goles 1ªP · 25€`);
+      sendTG(`${m.h} vs ${m.a} · ${m.league}\nMin.${m.min} · 0-0 1ªP · apostar +0.5 (50€) y +1.5 (25€)`);
     }
     if(m.min>=46&&m.min<=50&&m.lhH!=null&&!htSnapshot.has(m.id)) htSnapshot.set(m.id,{h:m.lhH,a:m.laH});
     const snap=htSnapshot.get(m.id);
@@ -153,7 +153,7 @@ function checkFootballAlerts(){
       simAlerts.unshift({id:k67+'_05',type:'football_2h_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 2ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'sh_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:2});
       simAlerts.unshift({id:k67+'_15',type:'football_2h_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 2ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'sh_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:2});
       if(simAlerts.length>500) simAlerts.length=500;
-      sendTG(`⚽ ROTURAS25 — FÚTBOL 2ª PARTE\n━━━━━━━━━━━━━━━━━━━━\n${m.league}\n${m.h} vs ${m.a}\n━━━━━━━━━━━━━━━━━━━━\n⏱ ~Min.${m.min}\n→ APUESTA 1: +0.5 goles 2ªP · 50€\n→ APUESTA 2: +1.5 goles 2ªP · 25€`);
+      sendTG(`${m.h} vs ${m.a} · ${m.league}\nMin.${m.min} · 0-0 2ªP · apostar +0.5 (50€) y +1.5 (25€)`);
     }
   });
 }
@@ -265,7 +265,15 @@ function isBreakAlert(m){
   if(!favIs||m.lastBreak.broken!==favIs) return false;
   const favG=favIs==='First Player'?parseInt(m.g1):parseInt(m.g2);
   const rivG=favIs==='First Player'?parseInt(m.g2):parseInt(m.g1);
-  return rivG>favG;
+  if(rivG<=favG) return false;
+  // La ventaja del rival debe venir SOLO de la rotura, no de saques ganados después.
+  // lastBreak.gP1/gP2 = marcador al terminar el juego de break.
+  // Si desde ese momento el rival ganó algún saque propio, rivG > lastBreak.gRiv → alerta falsa.
+  const brkFavG = favIs==='First Player' ? m.lastBreak.gP1 : m.lastBreak.gP2;
+  const brkRivG = favIs==='First Player' ? m.lastBreak.gP2 : m.lastBreak.gP1;
+  // El rival solo tiene break-ventaja si no ha ganado saques propios desde el break
+  // Es decir: rivG actual debe ser igual a rivG tras el break (brkRivG)
+  return rivG === brkRivG;
 }
 function checkBreakRecovery(live){
   live.forEach(m=>{
@@ -289,7 +297,7 @@ function checkBreakRecovery(live){
           alertedAt:nowISO(),resolved:true,outcome:'RECOVERY',
           _eventId:m.id,_setNum:m.curSetNum,_favIs:favIs,_favO:favO,_oddsband:breakSim._oddsband});
         if(simAlerts.length>500) simAlerts.length=500;
-        sendTG(`🎾 ROTURAS25 — BREAK RECUPERADO\n━━━━━━━━━━━━━━━━━━━━\n${m.p1} vs ${m.p2}\n📍 ${m.trn} [${m.cat.toUpperCase()}]\n✅ ${favName} ha RECUPERADO el break\n   Set ${m.curSetNum}: ${m.p1} ${m.g1}–${m.g2} ${m.p2}\n⭐ Fav @ ${favO!=null?favO+'x':'n/d'}`);
+        sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak recuperado set ${m.curSetNum}: ${m.g1}-${m.g2} · ${favName} igualó`);
       }
     }
     if(favG>rivG&&rec.alertedRecovery) rec.alertedRecovery=false;
@@ -299,7 +307,7 @@ function checkFootballStart(){
   lastFootball.forEach(m=>{
     if(m.status!=='IN_PLAY') return;
     const ks=`fstart_${m.id}`; if(alerted.has(ks)) return; alerted.add(ks);
-    sendTG(`⚽ PARTIDO INICIADO — ${m.league}\n━━━━━━━━━━━━━━━━━━━━\n${m.h} vs ${m.a}\n→ Monitorizado para alertas de gol`);
+    sendTG(`${m.h} vs ${m.a} · ${m.league}\nPartido iniciado`);
   });
 }
 function checkMonitoredMatchStart(){
@@ -307,7 +315,7 @@ function checkMonitoredMatchStart(){
     const ks=`start_${m.id}`; if(alerted.has(ks)) return; alerted.add(ks);
     const favIs=(m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX)?'First Player':'Second Player';
     const favName=favIs==='First Player'?m.p1:m.p2, favO=favIs==='First Player'?m.o1:m.o2;
-    sendTG(`🎾 PARTIDO INICIADO — MONITORIZADO\n━━━━━━━━━━━━━━━━━━━━\n${m.p1} vs ${m.p2}\n📍 ${m.trn} [${m.cat.toUpperCase()}]\n⭐ FAV: ${favName} @ ${favO!=null?favO+'x':'n/d'}\n→ Monitorizando roturas de saque`);
+    sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nInicio monitorizado · fav ${favName} @${favO!=null?favO+'x':'n/d'}`);
   });
 }
 function checkTennisAlerts(live){
@@ -326,7 +334,7 @@ function checkTennisAlerts(live){
       _favO:favO,_oddsband:oddsband,_cat:m.cat,_liveO1:m.o1,_liveO2:m.o2});
     if(simAlerts.length>500) simAlerts.length=500;
     const setsStr=m.sets1.map((s,i)=>`${s}-${m.sets2[i]}`).join(' · ');
-    sendTG(`🎾 ROTURAS25 — SAQUE ROTO\n━━━━━━━━━━━━━━━━━━━━\n${m.p1} vs ${m.p2}\n📍 ${m.trn} [${m.cat.toUpperCase()}]\n━━━━━━━━━━━━━━━━━━━━\n📊 ${setsStr?'Sets: '+setsStr+' | Set actual: '+m.g1+'-'+m.g2:'Marcador: '+m.g1+'-'+m.g2}\n⚡ ${favName} ha sido ROTO en Set ${m.curSetNum}\n   ${favName} va PERDIENDO el set\n━━━━━━━━━━━━━━━━━━━━\n⭐ FAVORITO: ${favName}\n   Cuota: ${favO!=null?favO+'x':'n/d'}\n→ APOSTAR que ${favName} gana el Set ${m.curSetNum}`);
+    sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak ${m.curSetNum}º set: ${m.g1}-${m.g2} · ${favName} roto\nFav @${favO!=null?favO+'x':'n/d'} → apostar gana set`);
   });
 }
 function checkSet1Loss(live){
@@ -353,7 +361,7 @@ function checkSet1Loss(live){
         alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_favIs:favIs,
         _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,_cat:m.cat});
       if(simAlerts.length>500) simAlerts.length=500;
-      sendTG(`🎾 ROTURAS25 — FAVORITO PIERDE SET 1\n━━━━━━━━━━━━━━━━━━━━\n${m.p1} vs ${m.p2}\n📍 ${m.trn} [${m.cat.toUpperCase()}]\n━━━━━━━━━━━━━━━━━━━━\n📊 Set 1: ${m.sets1[0]}-${m.sets2[0]} — ${favName} PERDIÓ\n⭐ Fav: ${favName} @ ${favO!=null?favO+'x':'n/d'}\n━━━━━━━━━━━━━━━━━━━━\n→ APOSTAR 1: ${favName} gana el Set 2\n→ APOSTAR 2: ${favName} gana el partido`);
+      sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nSet 1: ${m.sets1[0]}-${m.sets2[0]} · ${favName} pierde S1 @${favO!=null?favO+'x':'n/d'}\nApostar: gana S2 / gana partido`);
     }
   });
 }
@@ -367,12 +375,12 @@ function resolveTennisSims(){
       const sc1=m.sets1[idx], sc2=m.sets2[idx];
       s._tiebreak=(sc1===7&&sc2===6)||(sc1===6&&sc2===7);
       s.outcome=favWon?'WIN':'LOSS'; s.resolved=true; s.resolvedAt=nowISO();
-      sendTG(`📊 RESULTADO · ${s.match}\nSet ${s._setNum}: ${sc1}-${sc2}${s._tiebreak?' 🔀 TIEBREAK':''}\n${favName}: ${favWon?'✅ GANÓ':'❌ PERDIÓ'} el set`);
+      sendTG(`${s.match}\nSet ${s._setNum}: ${sc1}-${sc2}${s._tiebreak?' (tiebreak)':''} · ${favName} ${favWon?'gana':'pierde'} el set`);
     }
     if(s.type==='tennis_set1_set2'&&m.sets1.length>=2){
       const favWon=s._favIs==='First Player'?m.sets1[1]>m.sets2[1]:m.sets2[1]>m.sets1[1];
       s.outcome=favWon?'WIN':'LOSS'; s.resolved=true; s.resolvedAt=nowISO();
-      sendTG(`📊 RESULTADO · ${s.match}\nSet 2: ${m.sets1[1]}-${m.sets2[1]}\n${favName}: ${favWon?'✅ GANÓ':'❌ PERDIÓ'} el Set 2`);
+      sendTG(`${s.match}\nSet 2: ${m.sets1[1]}-${m.sets2[1]} · ${favName} ${favWon?'gana':'pierde'} S2`);
     }
     if(s.type==='tennis_set1_match'){
       const done=m.sets1.length>=2&&(m.sets1.filter((v,i)=>v>m.sets2[i]).length===2||m.sets2.filter((v,i)=>v>m.sets1[i]).length===2);
@@ -380,7 +388,7 @@ function resolveTennisSims(){
         const p1w=m.sets1.filter((v,i)=>v>m.sets2[i]).length, p2w=m.sets2.filter((v,i)=>v>m.sets1[i]).length;
         const favWon=s._favIs==='First Player'?p1w>p2w:p2w>p1w;
         s.outcome=favWon?'WIN':'LOSS'; s.resolved=true; s.resolvedAt=nowISO();
-        sendTG(`📊 RESULTADO · ${s.match}\nPartido: ${m.sets1.map((v,i)=>`${v}-${m.sets2[i]}`).join(' ')}\n${favName}: ${favWon?'✅ GANÓ':'❌ PERDIÓ'} el partido`);
+        sendTG(`${s.match}\n${m.sets1.map((v,i)=>`${v}-${m.sets2[i]}`).join(' ')} · ${favName} ${favWon?'gana':'pierde'} el partido`);
       }
     }
   });
