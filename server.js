@@ -533,6 +533,7 @@ function resolveTennisSims(){
       const idx=s._setNum-1, favWon=s._favIs==='First Player'?m.sets1[idx]>m.sets2[idx]:m.sets2[idx]>m.sets1[idx];
       const sc1=m.sets1[idx], sc2=m.sets2[idx];
       s._tiebreak=(sc1===7&&sc2===6)||(sc1===6&&sc2===7);
+      s._setScore=sc1+'-'+sc2;  // guardado permanentemente para el cliente
       s.outcome=favWon?'WIN':'LOSS'; s.resolved=true; s.resolvedAt=nowISO();
       sendTG(`${s.match}\nSet ${s._setNum}: ${sc1}-${sc2}${s._tiebreak?' (tiebreak)':''} · ${favName} ${favWon?'gana':'pierde'} el set`);
     }
