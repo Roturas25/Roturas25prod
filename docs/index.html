@@ -1248,9 +1248,15 @@ function saveBet(){
     date:now.toLocaleDateString('es-ES')+' '+now.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),
     _simId:simId, _favO:favO});
   lss('r25_bets',bets);pushFB();renderLog();updateStats();closeModal();
-  // Marcar alerta como registrada para ocultarla
+  // Marcar alerta como registrada para ocultarla (y todas las del mismo partido)
   if(simId){
     registeredAlerts.add(simId);
+    // Si hay más sims pendientes del mismo partido (ej: set1_set2 + set1_match), ocultarlos también
+    if(autoModalData && autoModalData._eventId){
+      simData.filter(s=>s._eventId===autoModalData._eventId&&!s.resolved).forEach(s=>{
+        registeredAlerts.add(s.id);
+      });
+    }
     lss('r25_regAlerts',[...registeredAlerts].slice(-500));
   }
   toast('Apuesta guardada',match+' @'+odds+'x · '+stake+'€');
@@ -1424,7 +1430,7 @@ function simTypeToBTOdds(type, o) {
 // 2. s._setScore  — "7-6" o "6-7", guardado permanentemente al resolver
 // 3. tData        — solo si el partido sigue en curso
 function deriveTiebreak(s) {
-  if (s._tiebreak) return true;
+  if (s._tiebreak === true) return true;
   if (s._setScore) {
     const parts = String(s._setScore).split('-');
     const a = parseInt(parts[0]), b = parseInt(parts[1]);
@@ -1494,7 +1500,7 @@ function syncBTFromSims(sims) {
       changed = true;
     } else if (s.resolved && existing.outcome !== 'pending') {
       // Retroactividad: propagar campos nuevos a registros ya resueltos
-      if (s._tiebreak && !existing._tiebreak) { existing._tiebreak = true; changed = true; }
+      if (s._tiebreak === true && existing._tiebreak !== true) { existing._tiebreak = true; changed = true; }
       if (s._tier    && !existing._tier)    { existing._tier    = s._tier;    changed = true; }
       if (s._surface && !existing._surface) { existing._surface = s._surface; changed = true; }
       if (s._round   && !existing._round)   { existing._round   = s._round;   changed = true; }
@@ -1530,7 +1536,7 @@ function _rescanTiebreaks() {
   if (!simData || !simData.length) return;
   let changed = false;
   btData.forEach(b => {
-    if (b.type !== 'tennis_break' || b._tiebreak || b.outcome === 'pending') return;
+    if (b.type !== 'tennis_break' || b._tiebreak === true || b.outcome === 'pending') return;
     const s = simData.find(x => x.id === b._simId);
     if (!s) return;
     const tb = deriveTiebreak(s);
