@@ -171,32 +171,61 @@ async function fetchAllOdds(){
 function getMatchOdds(e){ return oddsCache.get(String(e.event_key))||{o1:null,o2:null}; }
 
 // ── Football ─────────────────────────────────────────────────────────────────
+// Cache de minuto real desde AllSportsAPI football livescore (misma key que tenis)
+const fbMinuteCache = new Map();
+async function fetchFootballLiveMinutes(){
+  if(!TENNIS_KEY) return;
+  try{
+    const r=await fetchJson(`https://apiv2.allsportsapi.com/football/?met=Livescore&APIkey=${TENNIS_KEY}`);
+    if(!r.result) return;
+    const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+    r.result.forEach(e=>{
+      const min=parseInt(e.event_time)||0;
+      if(!min) return;
+      const key=norm(e.event_home_team)+'|'+norm(e.event_away_team);
+      fbMinuteCache.set(key,{min,extra:parseInt(e.event_time_extra)||0,ts:Date.now()});
+    });
+  }catch(e){console.warn('[FB_MIN]',e.message);}
+}
+function getRealMinute(homeTeam,awayTeam,fallback){
+  const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+  const key=norm(homeTeam)+'|'+norm(awayTeam);
+  const cached=fbMinuteCache.get(key);
+  if(cached&&(Date.now()-cached.ts)<180000) return cached.min+(cached.extra||0);
+  return fallback;
+}
+
 function normF(m,code){
   const shF=m.score?.fullTime?.home??m.score?.home??0;
   const saF=m.score?.fullTime?.away??m.score?.away??0;
   const shH=m.score?.halfTime?.home??null;
   const saH=m.score?.halfTime?.away??null;
+  const hName=m.homeTeam?.shortName||m.homeTeam?.name||'?';
+  const aName=m.awayTeam?.shortName||m.awayTeam?.name||'?';
   let min=0;
   if(m.status==='PAUSED'){min=45;}
   else if(m.status==='IN_PLAY'){
-    if(m.minute!=null&&m.minute>0){min=m.minute+(m.injuryTime||0);}
+    let fallback=0;
+    if(m.minute!=null&&m.minute>0){fallback=m.minute+(m.injuryTime||0);}
     else{
       const startTs=m.utcDate?new Date(m.utcDate).getTime():0;
       if(startTs>0){
         const el=Math.floor((Date.now()-startTs)/60000);
-        min=el<=47?el:el<=62?45:Math.min(45+(el-62),90);
+        fallback=el<=47?el:el<=62?45:Math.min(45+(el-62),90);
       }
     }
+    min=getRealMinute(hName,aName,fallback);
   }
   const g2=shH!=null?Math.max(0,(shF-shH)+(saF-saH)):0;
   return{id:'fd_'+m.id,league:code==='PD'?'LaLiga EA Sports':'Premier League',k:code==='PD'?'laliga':'premier',
-    status:m.status,min,h:m.homeTeam?.shortName||m.homeTeam?.name||'?',a:m.awayTeam?.shortName||m.awayTeam?.name||'?',
+    status:m.status,min,h:hName,a:aName,
     hc:m.homeTeam?.crest||null,ac:m.awayTeam?.crest||null,
     lh:shF,la:saF,lhLive:shF,laLive:saF,lhH:shH,laH:saH,g2,utcDate:m.utcDate,
     a25:alerted.has('25_fd_'+m.id),a67:alerted.has('67_fd_'+m.id)};
 }
 async function fetchFootball(){
   if(!FOOTBALL_KEY) return;
+  await fetchFootballLiveMinutes();
   const [t,tm]=[todayStr(),tomorrowStr()];
   const [pd,pl]=await Promise.all([
     fetchJson(`https://api.football-data.org/v4/competitions/PD/matches?dateFrom=${t}&dateTo=${tm}`,{'X-Auth-Token':FOOTBALL_KEY}),
