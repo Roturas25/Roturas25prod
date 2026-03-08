@@ -381,7 +381,7 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
 <div class="page" id="page-bt"><div class="wrap">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
     <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:var(--wht)">🔬 Backtesting automático</div>
-    <button onclick="clearBT()" style="background:rgba(255,85,85,.08);border:1px solid rgba(255,85,85,.2);color:#ff8888;padding:5px 10px;font-family:IBM Plex Mono,monospace;font-size:9px;cursor:pointer;border-radius:3px;text-transform:uppercase">Reset</button>
+    <button onclick="clearBT()" title="Requiere confirmación doble" style="background:rgba(255,85,85,.04);border:1px solid rgba(255,85,85,.12);color:rgba(255,136,136,.5);padding:5px 10px;font-family:IBM Plex Mono,monospace;font-size:9px;cursor:pointer;border-radius:3px;text-transform:uppercase">Reset</button>
     <button onclick="exportBT()" style="background:transparent;border:1px solid rgba(94,200,248,.3);color:var(--blu);padding:6px 14px;font-family:Oswald,sans-serif;font-size:11px;font-weight:600;cursor:pointer;border-radius:var(--r);text-transform:uppercase">⬇ Exportar</button>
   </div>
   <div style="background:var(--bg3);border:1px solid rgba(94,200,248,.2);border-radius:var(--r);padding:11px 12px;margin-bottom:12px;font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--wht3);line-height:1.7">
@@ -1509,10 +1509,16 @@ function rebuildBT() {
 }
 
 function clearBT() {
-  if (!confirm('¿Borrar todos los datos del backtest?')) return;
+  // Doble protección: primero confirmación, luego código de seguridad
+  if (!confirm('⚠️ Vas a borrar TODOS los datos del backtest.\n\nEsto eliminará ' + btData.length + ' registros de forma PERMANENTE.\n\n¿Continuar?')) return;
+  const code = prompt('Para confirmar escribe exactamente: BORRAR TODO');
+  if (code !== 'BORRAR TODO') { alert('Cancelado. Los datos no han sido borrados.'); return; }
   btData = [];
   lss('r25_bt', btData);
+  // También limpiar en Firebase
+  if (fbOk) fetch(FB_URL + '/btdata.json', {method:'PUT', body:'null'}).catch(()=>{});
   renderBT();
+  toast('Backtest limpiado', 'Todos los registros borrados');
 }
 
 function exportBT() {
