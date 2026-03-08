@@ -208,21 +208,28 @@ async function fetchFootball(){
 function checkFootballAlerts(){
   lastFootball.forEach(m=>{
     if(m.status!=='IN_PLAY') return;
-    if(m.min>=1&&m.min<=8&&!kickoffSnapshot.has(m.id)) kickoffSnapshot.set(m.id,{h:m.lhLive||0,a:m.laLive||0});
-    const liveGoals1h=(m.lhLive||0)+(m.laLive||0);
-    const snap0=kickoffSnapshot.get(m.id);
-    const knownGoals1h=Math.max(liveGoals1h,snap0?liveGoals1h-snap0.h-snap0.a:0);
+    // 1ªP: usar marcador real del partido (lhLive+laLive es el total de goles en juego)
+    // Si hay datos de halfTime y estamos en 1ªP, lhH/laH aún son null → usamos total live
+    const totalGoals=(m.lhLive||0)+(m.laLive||0);
     const k25='25_'+m.id;
-    if(m.min>=22&&m.min<=38&&!alerted.has(k25)&&knownGoals1h===0){
+    if(m.min>=22&&m.min<=38&&!alerted.has(k25)&&totalGoals===0){
       alerted.add(k25);
       simAlerts.unshift({id:k25+'_05',type:'football_ht_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:1});
       simAlerts.unshift({id:k25+'_15',type:'football_ht_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:1});
       if(simAlerts.length>500) simAlerts.length=500;
       sendTG(`${m.h} vs ${m.a} · ${m.league}\nMin.${m.min} · 0-0 1ªP · apostar +0.5 (50€) y +1.5 (25€)`);
     }
-    if(m.min>=46&&m.min<=50&&m.lhH!=null&&!htSnapshot.has(m.id)) htSnapshot.set(m.id,{h:m.lhH,a:m.laH});
+    // 2ªP: snapshot de goles al inicio de la 2ªP
+    // Guardamos cuando entramos en 2ªP (min 46-55, estado IN_PLAY)
+    if(m.min>=46&&m.min<=55&&!htSnapshot.has(m.id)){
+      // Usamos lhH/laH si disponibles, si no los totales actuales como baseline
+      const baseH = m.lhH!=null ? m.lhH : (m.lhLive||0);
+      const baseA = m.laH!=null ? m.laH : (m.laLive||0);
+      htSnapshot.set(m.id,{h:baseH,a:baseA});
+    }
     const snap=htSnapshot.get(m.id);
-    const goals2h=snap!=null?Math.max(0,((m.lhLive||0)-snap.h)+((m.laLive||0)-snap.a)):0;
+    // Si tenemos snapshot, calculamos goles desde ese momento. Si no, usamos g2 calculado en normF
+    const goals2h=snap!=null ? Math.max(0,((m.lhLive||0)-snap.h)+((m.laLive||0)-snap.a)) : (m.g2||0);
     const k67='67_'+m.id;
     if(m.min>=63&&m.min<=78&&!alerted.has(k67)&&goals2h===0){
       alerted.add(k67);
@@ -352,7 +359,17 @@ function normT(e){
   const{o1,o2}=getMatchOdds(e);
   const scores=e.scores||[];
   const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
-  const sets1=cs.map(s=>parseInt(s.score_first)||0), sets2=cs.map(s=>parseInt(s.score_second)||0);
+  let sets1=cs.map(s=>parseInt(s.score_first)||0), sets2=cs.map(s=>parseInt(s.score_second)||0);
+  // Fallback: si scores[] está vacío, intentar parsear event_first_player_score (ej: "6 3 2")
+  if(!sets1.length&&e.event_first_player_score&&e.event_second_player_score){
+    const sp1=(e.event_first_player_score||'').split(' ').map(Number).filter(n=>!isNaN(n));
+    const sp2=(e.event_second_player_score||'').split(' ').map(Number).filter(n=>!isNaN(n));
+    const n=Math.min(sp1.length,sp2.length);
+    for(let i=0;i<n;i++){
+      const a=sp1[i],b=sp2[i];
+      if((a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7)){sets1.push(a);sets2.push(b);}
+    }
+  }
   const curSetNum=cs.length+1;
   // Juegos del set actual — 3 fuentes por orden de prioridad
   const cr1=parseInt(e.event_first_player_score_current_set), cr2=parseInt(e.event_second_player_score_current_set);
@@ -419,6 +436,11 @@ async function fetchTennis(){
   ]);
   const liveRaw=(lR.status==='fulfilled'&&lR.value.result)?lR.value.result:[];
   const upRaw=(uR.status==='fulfilled'&&uR.value.result)?uR.value.result:[];
+  // Cachear finalizados para resolver sims pendientes
+  liveRaw.filter(e=>!isDoubles(e)&&e.event_status==='Finished').forEach(e=>{
+    const id='td_'+e.event_key;
+    finishedTennisCache.set(id, normT(e));
+  });
   const liveSingles=liveRaw.filter(e=>!isDoubles(e)&&e.event_status!=='Finished');
   const upSingles=upRaw.filter(e=>e.event_live==='0'&&!isDoubles(e));
   const live=liveSingles.map(normT), up=upSingles.map(normTUp);
@@ -535,16 +557,23 @@ function checkSet1Loss(live){
   });
   scheduleFbSave();
 }
+// Cache de partidos tenis ya finalizados (para resolver sims cuando el partido
+// ya no aparece en el live feed — puede durar horas sin datos)
+const finishedTennisCache = new Map(); // eventId → último estado normalizado
+
 function resolveTennisSims(){
   simAlerts.forEach(s=>{
     if(s.resolved) return;
-    const m=lastTennis.find(x=>x.id===s._eventId); if(!m||m.isUp) return;
+    // Buscar primero en live, luego en cache de finalizados
+    let m = lastTennis.find(x=>x.id===s._eventId);
+    if(!m) m = finishedTennisCache.get(s._eventId);
+    if(!m||m.isUp) return;
     const favName=s._favIs==='First Player'?s.match.split(' vs ')[0]:(s.match.split(' vs ')[1]||'').trim();
     if(s.type==='tennis_break'&&m.sets1.length>s._setsP1atAlert.length){
       const idx=s._setNum-1, favWon=s._favIs==='First Player'?m.sets1[idx]>m.sets2[idx]:m.sets2[idx]>m.sets1[idx];
       const sc1=m.sets1[idx], sc2=m.sets2[idx];
       s._tiebreak=(sc1===7&&sc2===6)||(sc1===6&&sc2===7);
-      s._setScore=sc1+'-'+sc2;  // guardado permanentemente para el cliente
+      s._setScore=sc1+'-'+sc2;
       s.outcome=favWon?'WIN':'LOSS'; s.resolved=true; s.resolvedAt=nowISO();
       sendTG(`${s.match}\nSet ${s._setNum}: ${sc1}-${sc2}${s._tiebreak?' (tiebreak)':''} · ${favName} ${favWon?'gana':'pierde'} el set`);
     }
@@ -566,6 +595,51 @@ function resolveTennisSims(){
   scheduleFbSave();
 }
 
+// Revisión periódica cada 8h: intenta resolver sims pendientes vía AllSportsAPI histórico
+let lastPeriodicCheck = 0;
+async function periodicResolveCheck() {
+  const now = Date.now();
+  if (now - lastPeriodicCheck < 8*60*60*1000) return;
+  lastPeriodicCheck = now;
+  const pending = simAlerts.filter(s => !s.resolved && s._eventId && s.type !== 'tennis_recovery');
+  if (!pending.length) return;
+  console.log(`[PERIODIC] Revisando ${pending.length} sims pendientes...`);
+  // Obtener resultados históricos de AllSportsAPI (últimos 7 días)
+  if (!TENNIS_KEY) return;
+  try {
+    const dates = [];
+    for (let d = 0; d < 7; d++) {
+      const dt = new Date(Date.now() - d*86400000);
+      dates.push(dt.toISOString().split('T')[0]);
+    }
+    for (const dateStr of dates) {
+      const r = await fetchJson(
+        `https://apiv2.allsportsapi.com/tennis/?met=Fixtures&APIkey=${TENNIS_KEY}&from=${dateStr}&to=${dateStr}`
+      ).catch(()=>null);
+      if (!r || !r.result) continue;
+      r.result.filter(e=>e.event_status==='Finished'&&!isDoubles(e)).forEach(e => {
+        const id = 'td_' + e.event_key;
+        if (!finishedTennisCache.has(id)) {
+          finishedTennisCache.set(id, normT(e));
+        }
+      });
+    }
+    console.log(`[PERIODIC] Cache finalizados: ${finishedTennisCache.size}`);
+    resolveTennisSims();
+    // También intentar resolver fútbol: buscar partidos FINISHED
+    if (FOOTBALL_KEY) {
+      const [t7, t] = [new Date(Date.now()-7*86400000).toISOString().split('T')[0], todayStr()];
+      const [pd, pl] = await Promise.all([
+        fetchJson(`https://api.football-data.org/v4/competitions/PD/matches?dateFrom=${t7}&dateTo=${t}&status=FINISHED`, {'X-Auth-Token': FOOTBALL_KEY}).catch(()=>({matches:[]})),
+        fetchJson(`https://api.football-data.org/v4/competitions/PL/matches?dateFrom=${t7}&dateTo=${t}&status=FINISHED`, {'X-Auth-Token': FOOTBALL_KEY}).catch(()=>({matches:[]})),
+      ]);
+      const finished = [...(pd.matches||[]).map(m=>normF(m,'PD')), ...(pl.matches||[]).map(m=>normF(m,'PL'))];
+      finished.forEach(m => { if (!allFootballForSim.find(x=>x.id===m.id)) allFootballForSim.push(m); });
+      resolveFootballSims();
+    }
+  } catch(e) { console.warn('[PERIODIC]', e.message); }
+}
+
 // ── Poll ─────────────────────────────────────────────────────────────────────
 async function poll(){
   try{
@@ -580,6 +654,7 @@ async function poll(){
     checkFootballStart();
     resolveTennisSims();
     resolveFootballSims();
+    await periodicResolveCheck();
     lastUpdate=nowISO();
     if(stats.pollCount%20===0) console.log(`[POLL #${stats.pollCount}] Tennis:${lastTennis.filter(m=>!m.isUp).length} Football:${lastFootball.filter(m=>m.status==='IN_PLAY').length} Odds:${oddsCache.size}`);
   }catch(e){stats.errors++;console.error('[POLL ERROR]',e.message);}
@@ -617,7 +692,7 @@ const server=http.createServer((req,res)=>{
 
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
-    res.end(JSON.stringify({ok:true,version:'v6',football:!!FOOTBALL_KEY,tennis:!!TENNIS_KEY,telegram:!!TG_TOKEN,oddMin:ODD_MIN,oddMax:ODD_MAX,updated:lastUpdate,stats,liveFootball:lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED').length,liveTennis:lastTennis.filter(m=>!m.isUp).length,oddsCache:oddsCache.size,simCount:simAlerts.length}));
+    res.end(JSON.stringify({ok:true,version:'v7',football:!!FOOTBALL_KEY,tennis:!!TENNIS_KEY,telegram:!!TG_TOKEN,oddMin:ODD_MIN,oddMax:ODD_MAX,updated:lastUpdate,stats,liveFootball:lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED').length,liveTennis:lastTennis.filter(m=>!m.isUp).length,oddsCache:oddsCache.size,simCount:simAlerts.length}));
     return;
   }
 
@@ -660,7 +735,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v6 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v7 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗ falta FOOTBALL_KEY'}  Tennis:${TENNIS_KEY?'✓':'✗ falta TENNIS_KEY'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
