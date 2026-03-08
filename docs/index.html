@@ -1455,7 +1455,19 @@ function syncBTFromSims(sims) {
         _tier:     s._tier     || null,
         _surface:  s._surface  || null,
         _round:    s._round    || null,
-        _tiebreak: s._tiebreak || false,
+        _tiebreak: (() => {
+          if (s._tiebreak) return true;
+          // Derivar del marcador si el servidor no lo mandó aún
+          if (s.type === 'tennis_break' && s._setNum != null) {
+            const td = tData ? tData.find(m => m.id === s._eventId) : null;
+            const idx = (s._setNum || 1) - 1;
+            if (td && td.sets1 && td.sets1[idx] != null) {
+              const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
+              return (sc1===7&&sc2===6)||(sc1===6&&sc2===7);
+            }
+          }
+          return false;
+        })(),
       };
       entry.profit = entry.outcome === 'win' ? parseFloat(((cfg.odds-1)*cfg.stake).toFixed(2))
                    : entry.outcome === 'loss' ? -cfg.stake : 0;
@@ -1467,7 +1479,19 @@ function syncBTFromSims(sims) {
       existing.profit = existing.outcome === 'win'
         ? parseFloat(((existing.odds-1)*existing.stake).toFixed(2))
         : -existing.stake;
-      if (s._tiebreak) existing._tiebreak = true;
+      // _tiebreak: tomar del servidor si viene, si no derivar del marcador del set
+      if (s._tiebreak) {
+        existing._tiebreak = true;
+      } else if (s.type === 'tennis_break' && s._setNum != null) {
+        const idx = s._setNum - 1;
+        // El marcador final del set apostado viene en el simAlert si está resuelto
+        // También podemos derivarlo del detalle o de los sets actuales del partido
+        const td = tData ? tData.find(m => m.id === s._eventId) : null;
+        if (td && td.sets1 && td.sets1[idx] != null) {
+          const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
+          if ((sc1===7&&sc2===6)||(sc1===6&&sc2===7)) existing._tiebreak = true;
+        }
+      }
       changed = true;
     } else if (s.resolved && existing.outcome !== 'pending') {
       // Retroactividad: propagar campos nuevos a registros ya resueltos
@@ -1478,6 +1502,7 @@ function syncBTFromSims(sims) {
     }
   });
 
+  _rescanTiebreaks();
   if (changed) {
     if (btData.length > 5000) btData.length = 5000;
     lss('r25_bt', btData);
@@ -1498,6 +1523,33 @@ function pushBTtoFB() {
       await fetch(FB_URL + '/btdata.json', {method:'PUT', body: JSON.stringify(o)});
     } catch(e) {}
   }, 2000);
+}
+
+// Re-scan retroactivo de tiebreaks: recalcula _tiebreak en registros existentes
+// usando los simAlerts en memoria (si están disponibles) o el marcador del partido
+function _rescanTiebreaks() {
+  if (!simData || !simData.length) return;
+  let changed = false;
+  btData.forEach(b => {
+    if (b.type !== 'tennis_break' || b._tiebreak || b.outcome === 'pending') return;
+    // Buscar el simAlert correspondiente
+    const s = simData.find(x => x.id === b._simId);
+    if (!s) return;
+    // Si el servidor ya tiene _tiebreak en el simAlert
+    if (s._tiebreak) { b._tiebreak = true; changed = true; return; }
+    // Si no, derivar del detalle del simAlert resuelto
+    // El detail del set resuelto está en el TG message, no en simAlert detail
+    // Pero podemos mirar si los sets del partido están en tData
+    const td = tData ? tData.find(m => m.id === s._eventId) : null;
+    if (td && s._setNum != null) {
+      const idx = s._setNum - 1;
+      if (td.sets1 && td.sets1[idx] != null) {
+        const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
+        if ((sc1===7&&sc2===6)||(sc1===6&&sc2===7)) { b._tiebreak = true; changed = true; }
+      }
+    }
+  });
+  if (changed) { lss('r25_bt', btData); console.log('[BT] Tiebreaks rescaneados'); }
 }
 
 // Migración retroactiva: cuotas + tier/surface desde detail
@@ -1616,8 +1668,8 @@ function renderBT() {
   pnlEl.textContent = (pnlTotal >= 0 ? '+' : '') + pnlTotal.toFixed(0) + '€';
   pnlEl.style.color = pnlTotal > 0 ? 'var(--grn)' : pnlTotal < 0 ? '#ff8888' : 'var(--wht3)';
   $i('bt-wr').textContent = wr + '% win rate (' + wins + '/' + (wins+losses) + ' resueltas)';
-  // Stat tiebreak: % de sets con break-alerta que llegan a tiebreak
-  const breakResolved = btData.filter(b => b.type === 'tennis_break' && b.outcome !== 'pending');
+  // Stat tiebreak: sobre los datos filtrados actualmente
+  const breakResolved = flt.filter(b => b.type === 'tennis_break' && b.outcome !== 'pending');
   const tiebreaks = breakResolved.filter(b => b._tiebreak);
   const tbPct = breakResolved.length > 0 ? Math.round(tiebreaks.length / breakResolved.length * 100) : null;
   const tbEl = $i('bt-tiebreak');
