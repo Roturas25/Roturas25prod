@@ -857,9 +857,13 @@ function isAlert(m){
   else if(m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX)fIs='Second Player';
   else return false;
   if(m.lastBreak.broken!==fIs)return false;
-  const fG=fIs==='First Player'?m.lastBreak.gP1:m.lastBreak.gP2;
-  const rG=fIs==='First Player'?m.lastBreak.gP2:m.lastBreak.gP1;
-  if(rG<=fG) return false;
+  const favG=fIs==='First Player'?parseInt(m.g1):parseInt(m.g2);
+  const rivG=fIs==='First Player'?parseInt(m.g2):parseInt(m.g1);
+  if(rivG<=favG) return false;
+  // Solo alerta si la ventaja del rival viene exclusivamente del break, no de saques ganados después
+  const brkFavG=fIs==='First Player'?m.lastBreak.gP1:m.lastBreak.gP2;
+  const brkRivG=fIs==='First Player'?m.lastBreak.gP2:m.lastBreak.gP1;
+  if(rivG!==brkRivG) return false;
   // Ocultar si ya fue registrada
   const relSim=simData.find(s=>s._eventId===m.id&&s.type==='tennis_break'&&!s.resolved);
   if(relSim && registeredAlerts.has(relSim.id)) return false;
@@ -1383,7 +1387,6 @@ function syncBTFromSims(sims) {
       btData.unshift(entry);
       changed = true;
     } else if (s.resolved && existing.outcome === 'pending') {
-      // Resolver entrada existente
       existing.outcome  = s.outcome === 'WIN' ? 'win' : 'loss';
       existing.resolvedAt = s.resolvedAt;
       existing.profit = existing.outcome === 'win'
@@ -1391,6 +1394,9 @@ function syncBTFromSims(sims) {
         : -existing.stake;
       if (s._tiebreak) existing._tiebreak = true;
       changed = true;
+    } else if (s.resolved && existing.outcome !== 'pending') {
+      // Retroactividad: propagar campos nuevos a registros ya resueltos
+      if (s._tiebreak && !existing._tiebreak) { existing._tiebreak = true; changed = true; }
     }
   });
 
@@ -1480,8 +1486,16 @@ function renderBT() {
   const tbEl = $i('bt-tiebreak');
   if (tbEl) {
     if (tbPct !== null) {
-      tbEl.innerHTML = '🔀 Tiebreak en sets apostados: <strong style="color:var(--yel)">' + tbPct + '%</strong>'
-        + ' <span style="opacity:.5;font-size:10px">(' + tiebreaks.length + '/' + breakResolved.length + ' sets)</span>';
+      const tbWins  = tiebreaks.filter(b => b.outcome === 'win').length;
+      const tbLoss  = tiebreaks.filter(b => b.outcome === 'loss').length;
+      const tbWrPct = tiebreaks.length > 0 ? Math.round(tbWins / tiebreaks.length * 100) : 0;
+      tbEl.innerHTML = '🔀 Sets con tiebreak: <strong style="color:var(--yel)">' + tbPct + '%</strong>'
+        + ' <span style="opacity:.5;font-size:10px">(' + tiebreaks.length + '/' + breakResolved.length + ')</span>'
+        + (tiebreaks.length > 0
+          ? '<div style="margin-top:3px">Tiebreaks ganados: <strong style="color:var(--grn)">' + tbWins + '</strong>'
+            + ' · perdidos: <strong style="color:#ff8888">' + tbLoss + '</strong>'
+            + ' · win rate: <strong style="color:var(--yel)">' + tbWrPct + '%</strong></div>'
+          : '');
       tbEl.style.display = 'block';
     } else {
       tbEl.style.display = 'none';
