@@ -1418,6 +1418,29 @@ function simTypeToBTOdds(type, o) {
 }
 
 // Llamar cada vez que llegan nuevos simAlerts del servidor
+// Derivar tiebreak de un simAlert de forma fiable
+// Fuentes en orden de prioridad:
+// 1. s._tiebreak  — asignado por el servidor al resolver (más fiable)
+// 2. s._setScore  — "7-6" o "6-7", guardado permanentemente al resolver
+// 3. tData        — solo si el partido sigue en curso
+function deriveTiebreak(s) {
+  if (s._tiebreak) return true;
+  if (s._setScore) {
+    const parts = String(s._setScore).split('-');
+    const a = parseInt(parts[0]), b = parseInt(parts[1]);
+    return (a===7&&b===6)||(a===6&&b===7);
+  }
+  if (s.type === 'tennis_break' && s._setNum != null) {
+    const td = tData ? tData.find(m => m.id === s._eventId) : null;
+    const idx = (s._setNum || 1) - 1;
+    if (td && td.sets1 && td.sets1[idx] != null) {
+      const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
+      return (sc1===7&&sc2===6)||(sc1===6&&sc2===7);
+    }
+  }
+  return false;
+}
+
 function syncBTFromSims(sims) {
   if (!sims || !sims.length) return;
   // Migración retroactiva: corregir cuotas antiguas en btData existente
@@ -1455,19 +1478,7 @@ function syncBTFromSims(sims) {
         _tier:     s._tier     || null,
         _surface:  s._surface  || null,
         _round:    s._round    || null,
-        _tiebreak: (() => {
-          if (s._tiebreak) return true;
-          // Derivar del marcador si el servidor no lo mandó aún
-          if (s.type === 'tennis_break' && s._setNum != null) {
-            const td = tData ? tData.find(m => m.id === s._eventId) : null;
-            const idx = (s._setNum || 1) - 1;
-            if (td && td.sets1 && td.sets1[idx] != null) {
-              const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
-              return (sc1===7&&sc2===6)||(sc1===6&&sc2===7);
-            }
-          }
-          return false;
-        })(),
+        _tiebreak: deriveTiebreak(s),
       };
       entry.profit = entry.outcome === 'win' ? parseFloat(((cfg.odds-1)*cfg.stake).toFixed(2))
                    : entry.outcome === 'loss' ? -cfg.stake : 0;
@@ -1479,19 +1490,7 @@ function syncBTFromSims(sims) {
       existing.profit = existing.outcome === 'win'
         ? parseFloat(((existing.odds-1)*existing.stake).toFixed(2))
         : -existing.stake;
-      // _tiebreak: tomar del servidor si viene, si no derivar del marcador del set
-      if (s._tiebreak) {
-        existing._tiebreak = true;
-      } else if (s.type === 'tennis_break' && s._setNum != null) {
-        const idx = s._setNum - 1;
-        // El marcador final del set apostado viene en el simAlert si está resuelto
-        // También podemos derivarlo del detalle o de los sets actuales del partido
-        const td = tData ? tData.find(m => m.id === s._eventId) : null;
-        if (td && td.sets1 && td.sets1[idx] != null) {
-          const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
-          if ((sc1===7&&sc2===6)||(sc1===6&&sc2===7)) existing._tiebreak = true;
-        }
-      }
+      existing._tiebreak = deriveTiebreak(s);
       changed = true;
     } else if (s.resolved && existing.outcome !== 'pending') {
       // Retroactividad: propagar campos nuevos a registros ya resueltos
@@ -1532,22 +1531,10 @@ function _rescanTiebreaks() {
   let changed = false;
   btData.forEach(b => {
     if (b.type !== 'tennis_break' || b._tiebreak || b.outcome === 'pending') return;
-    // Buscar el simAlert correspondiente
     const s = simData.find(x => x.id === b._simId);
     if (!s) return;
-    // Si el servidor ya tiene _tiebreak en el simAlert
-    if (s._tiebreak) { b._tiebreak = true; changed = true; return; }
-    // Si no, derivar del detalle del simAlert resuelto
-    // El detail del set resuelto está en el TG message, no en simAlert detail
-    // Pero podemos mirar si los sets del partido están en tData
-    const td = tData ? tData.find(m => m.id === s._eventId) : null;
-    if (td && s._setNum != null) {
-      const idx = s._setNum - 1;
-      if (td.sets1 && td.sets1[idx] != null) {
-        const sc1 = td.sets1[idx], sc2 = td.sets2[idx];
-        if ((sc1===7&&sc2===6)||(sc1===6&&sc2===7)) { b._tiebreak = true; changed = true; }
-      }
-    }
+    const tb = deriveTiebreak(s);
+    if (tb) { b._tiebreak = true; changed = true; }
   });
   if (changed) { lss('r25_bt', btData); console.log('[BT] Tiebreaks rescaneados'); }
 }
