@@ -151,6 +151,44 @@ const BT_ODDS = {
   football_2h_15:    { odds: 3.00, stake: 25 },
 };
 
+// ── Etiquetas legibles para tipos de alerta ────────────────────────────────────
+const BT_TYPE_LABEL = {
+  tennis_break:      'Rotura tenis',
+  tennis_set1_set2:  'Pierde S1 → gana S2',
+  tennis_set1_match: 'Pierde S1 → gana partido',
+  football_ht_05:    'Fútbol 1ªP +0.5g',
+  football_ht_15:    'Fútbol 1ªP +1.5g',
+  football_2h_05:    'Fútbol 2ªP +0.5g',
+  football_2h_15:    'Fútbol 2ªP +1.5g',
+};
+
+// Envía notificación BT tras resolver una apuesta
+async function sendBtResolutionTG(entry, allBt) {
+  try {
+    const icon   = entry.outcome === 'win' ? '✅' : '❌';
+    const label  = BT_TYPE_LABEL[entry.type] || entry.type;
+    const profStr = (entry.profit >= 0 ? '+' : '') + entry.profit.toFixed(2) + '€';
+
+    // Stats globales sobre todos los registros no-pending
+    const resolved = allBt.filter(b => b.outcome === 'win' || b.outcome === 'loss');
+    const wins     = resolved.filter(b => b.outcome === 'win').length;
+    const losses   = resolved.filter(b => b.outcome === 'loss').length;
+    const totalProfit = resolved.reduce((acc, b) => acc + (b.profit || 0), 0);
+    const totalStake  = resolved.reduce((acc, b) => acc + (b.stake  || 0), 0);
+    const roi  = totalStake > 0 ? ((totalProfit / totalStake) * 100).toFixed(1) : '0.0';
+    const profGlobal = (totalProfit >= 0 ? '+' : '') + totalProfit.toFixed(2) + '€';
+
+    const msg =
+`📊 BT · ${entry.match}
+${icon} ${label} @${entry.odds}x · ${profStr}
+
+Apuestas: ${wins}W / ${losses}L (${resolved.length} total)
+Profit: ${profGlobal} · ROI ${roi}%`;
+
+    await sendTG(msg);
+  } catch(e) { console.warn('[BT-TG]', e.message); }
+}
+
 // Sincroniza un simAlert (nuevo o recién resuelto) con serverBtData
 function syncSimToBtData(s) {
   if (!btDataLoaded) return;
@@ -189,6 +227,7 @@ function syncSimToBtData(s) {
     if (s._round   && !existing._round)   existing._round   = s._round;
     scheduleBtSave();
     console.log(`[BT-SERVER] ✓ ${s.match} [${s.type}] → ${oc} (${profit>=0?'+':''}${profit}€)`);
+    sendBtResolutionTG(existing, serverBtData);
   }
 }
 
