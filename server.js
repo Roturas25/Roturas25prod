@@ -863,9 +863,114 @@ async function periodicResolveCheck() {
   if (justResolved > 0) console.log(`[AUTO-RESOLVE] ✓ ${justResolved} resueltos, ${stillPending} restantes`);
   else console.log(`[AUTO-RESOLVE] ${stillPending} pendientes sin resolver aún`);
   scheduleFbSave();
+
+  // Recoger los recién resueltos para incluirlos en el chequeo 8h
+  const nowResolved = simAlerts.filter(s =>
+    s.resolved && s.type !== 'tennis_recovery' &&
+    s.resolvedAt && (Date.now() - new Date(s.resolvedAt).getTime()) < 6 * 60 * 1000
+  );
+  await eightHourCheck(nowResolved);
 }
 
-// ── Poll ─────────────────────────────────────────────────────────────────────
+// ── Resumen BT global (helper compartido) ─────────────────────────────────────
+function btGlobalStats(allBt) {
+  const resolved = allBt.filter(b => b.outcome === 'win' || b.outcome === 'loss');
+  const wins     = resolved.filter(b => b.outcome === 'win').length;
+  const losses   = resolved.filter(b => b.outcome === 'loss').length;
+  const pending  = allBt.filter(b => b.outcome === 'pending').length;
+  const totalProfit = resolved.reduce((a, b) => a + (b.profit || 0), 0);
+  const totalStake  = resolved.reduce((a, b) => a + (b.stake  || 0), 0);
+  const roi = totalStake > 0 ? ((totalProfit / totalStake) * 100).toFixed(1) : '0.0';
+  return { wins, losses, pending, totalProfit, roi, resolved: resolved.length };
+}
+
+// ── Chequeo cada 8 horas → TG con resoluciones + stats ───────────────────────
+let lastEightHourCheck = 0;
+const EIGHT_HOUR_MS    = 8 * 60 * 60 * 1000;
+
+async function eightHourCheck(resolvedInThisCheck) {
+  const now = Date.now();
+  if (now - lastEightHourCheck < EIGHT_HOUR_MS) return;
+  lastEightHourCheck = now;
+
+  const g = btGlobalStats(serverBtData);
+  const profStr = (g.totalProfit >= 0 ? '+' : '') + g.totalProfit.toFixed(2) + '€';
+
+  let resLines = '';
+  if (resolvedInThisCheck && resolvedInThisCheck.length) {
+    resLines = '\n\nResueltos ahora:\n' + resolvedInThisCheck.map(s => {
+      const icon = s.outcome === 'WIN' ? '✅' : '❌';
+      const label = BT_TYPE_LABEL[s.type] || s.type;
+      return `${icon} ${s.match} · ${label}`;
+    }).join('\n');
+  } else {
+    resLines = '\n\nSin nuevas resoluciones en este chequeo.';
+  }
+
+  const msg =
+`🔄 Chequeo 8h · BT global
+${resLines}
+
+Apuestas: ${g.wins}W / ${g.losses}L · ${g.pending} pendientes
+Profit: ${profStr} · ROI ${g.roi}%`;
+
+  await sendTG(msg);
+}
+
+// ── Alerta diaria a las 15:00 (últimas 24h) ──────────────────────────────────
+let lastDailyAlert = 0;
+
+function scheduleDailyAlert() {
+  const now   = new Date();
+  const next  = new Date(now);
+  next.setHours(15, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  const msUntil = next - now;
+  console.log(`[DAILY-BT] Próxima alerta diaria en ${Math.round(msUntil/60000)} min`);
+  setTimeout(async () => {
+    await sendDailyBtSummary();
+    scheduleDailyAlert(); // reprogramar para mañana
+  }, msUntil);
+}
+
+async function sendDailyBtSummary() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const last24 = serverBtData.filter(b => {
+    const t = new Date(b.resolvedAt || b.alertedAt || 0).getTime();
+    return t >= cutoff && (b.outcome === 'win' || b.outcome === 'loss');
+  });
+
+  const g = btGlobalStats(serverBtData);
+  const profStr    = (g.totalProfit >= 0 ? '+' : '') + g.totalProfit.toFixed(2) + '€';
+  const wins24     = last24.filter(b => b.outcome === 'win').length;
+  const losses24   = last24.filter(b => b.outcome === 'loss').length;
+  const profit24   = last24.reduce((a, b) => a + (b.profit || 0), 0);
+  const prof24Str  = (profit24 >= 0 ? '+' : '') + profit24.toFixed(2) + '€';
+
+  let detalle = '';
+  if (last24.length) {
+    detalle = '\n\n' + last24.slice(0, 10).map(b => {
+      const icon = b.outcome === 'win' ? '✅' : '❌';
+      const label = BT_TYPE_LABEL[b.type] || b.type;
+      return `${icon} ${b.match} · ${label}`;
+    }).join('\n');
+    if (last24.length > 10) detalle += `\n…y ${last24.length - 10} más`;
+  } else {
+    detalle = '\n\nSin apuestas resueltas en las últimas 24h.';
+  }
+
+  const msg =
+`📅 Resumen BT · últimas 24h
+${wins24}W / ${losses24}L · ${prof24Str}${detalle}
+
+Acumulado total:
+${g.wins}W / ${g.losses}L · Profit: ${profStr} · ROI ${g.roi}%`;
+
+  await sendTG(msg);
+  lastDailyAlert = Date.now();
+}
+
+
 async function poll(){
   try{
     stats.pollCount++;
@@ -962,11 +1067,26 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v8 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v9 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗ falta FOOTBALL_KEY'}  Tennis:${TENNIS_KEY?'✓':'✗ falta TENNIS_KEY'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
   await loadStateFromFB();
-  await loadBtDataFromFB(); // cargar btData para sincronización server-side
+  await loadBtDataFromFB();
+
+  // Notificación de arranque con estado BT actual (una sola vez)
+  setTimeout(async () => {
+    if (!serverBtData.length) return;
+    const g = btGlobalStats(serverBtData);
+    const profStr = (g.totalProfit >= 0 ? '+' : '') + g.totalProfit.toFixed(2) + '€';
+    await sendTG(
+`🚀 Roturas25 v9 iniciado
+BT actual: ${g.wins}W / ${g.losses}L · ${g.pending} pendientes
+Profit: ${profStr} · ROI ${g.roi}%`
+    );
+    console.log('[STARTUP] Notificación BT enviada');
+  }, 8000); // esperar 8s a que btData cargue
+
+  scheduleDailyAlert(); // programar alerta diaria a las 15:00
   poll();
 });
