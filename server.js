@@ -2,7 +2,7 @@
 const http  = require('http');
 const https = require('https');
 
-process.on('uncaughtException',  e => console.error('[UNCAUGHT]',  e.message));
+process.on('uncaughtException',  e => { console.error('[UNCAUGHT]', e.message, e.stack); process.exit(1); });
 process.on('unhandledRejection', e => console.error('[UNHANDLED]', String(e)));
 
 const FOOTBALL_KEY = process.env.FOOTBALL_KEY || '';
@@ -13,7 +13,11 @@ const PORT         = parseInt(process.env.PORT || '3000', 10);
 const ODD_MIN      = parseFloat(process.env.ODD_MIN || '1.20');
 const ODD_MAX      = parseFloat(process.env.ODD_MAX || '1.60');
 
-const alerted           = new Set();
+const alerted           = new Map(); // key → timestamp
+const ALERTED_TTL = 24*60*60*1000; // 24h
+function alertedHas(k){ const t=alerted.get(k); return t!=null && (Date.now()-t)<ALERTED_TTL; }
+function alertedAdd(k){ alerted.set(k, Date.now()); }
+function cleanupAlerted(){ const c=Date.now()-ALERTED_TTL; for(const[k,t] of alerted) if(t<c) alerted.delete(k); }
 let   lastFootball      = [];
 let   allFootballForSim = [];
 let   lastTennis        = [];
@@ -77,7 +81,7 @@ function scheduleFbSave() {
   fbSaveTimer = setTimeout(async () => {
     fbSaveTimer = null;
     try {
-      await fbPut('/state/alerted',  [...alerted].slice(-2000));
+      await fbPut('/state/alerted',  [...alerted.keys()].slice(-2000));
       await fbPut('/state/sims',     simAlerts.slice(0, 500));
       console.log('[FB] Estado guardado');
     } catch(e) { console.warn('[FB SAVE]', e.message); }
@@ -90,7 +94,7 @@ async function loadStateFromFB() {
   try {
     const savedAlerted = await fbGet('/state/alerted');
     if (Array.isArray(savedAlerted)) {
-      savedAlerted.forEach(k => alerted.add(k));
+      savedAlerted.forEach(k => alertedAdd(k));
       console.log('[FB] alerted restaurado:', alerted.size, 'claves');
     }
     const savedSims = await fbGet('/state/sims');
@@ -140,21 +144,53 @@ function isDoubles(e){
 }
 
 // ── Cuotas ──────────────────────────────────────────────────────────────────
+const ODDS_TTL = 3 * 60 * 1000; // refrescar cuotas cada 3 min
+
 function buildOddsCache(result){
   if(!result||typeof result!=='object') return;
   Object.entries(result).forEach(([id,data])=>{
-    if(oddsCache.has(id)) return;
+    // TTL: si las cuotas tienen menos de 3 min, no sobreescribir
+    const ex=oddsCache.get(id);
+    if(ex && (Date.now()-ex.ts)<ODDS_TTL) return;
+
     const hw=data['Home/Away']||data['1X2']||data['Match Winner']||data['Winner']||null;
     if(!hw) return;
-    function median(obj){
-      if(!obj||typeof obj!=='object') return null;
-      const v=Object.values(obj).map(x=>parseFloat(x)).filter(x=>!isNaN(x)&&x>1);
-      if(!v.length) return null; v.sort((a,b)=>a-b);
-      return Math.round(v[Math.floor(v.length/2)]*100)/100;
+
+    // Extraer cuotas POR casa de apuestas para mostrar al usuario
+    function parseBookies(obj){
+      if(!obj||typeof obj!=='object') return {odds:null,bookies:[],source:null};
+      const entries=Object.entries(obj)
+        .map(([bk,v])=>({bk, odds:parseFloat(v)}))
+        .filter(x=>!isNaN(x.odds)&&x.odds>1);
+      if(!entries.length) return {odds:null,bookies:[],source:null};
+      entries.sort((a,b)=>a.odds-b.odds);
+      const mid=entries[Math.floor(entries.length/2)];
+      // Bookmakers populares primero para mostrar
+      const KNOWN=['Bet365','Betway','1xBet','Unibet','William Hill','Pinnacle','Bwin','Betfair','Ladbrokes','Coral'];
+      const sorted=[...entries].sort((a,b)=>{
+        const ai=KNOWN.indexOf(a.bk), bi=KNOWN.indexOf(b.bk);
+        return (ai===-1?99:ai)-(bi===-1?99:bi);
+      });
+      return {
+        odds: Math.round(mid.odds*100)/100,
+        bookies: sorted.map(e=>e.bk),
+        source: sorted[0]?.bk || mid.bk,
+        count: entries.length
+      };
     }
-    const o1=median(hw['Home']||hw['Player 1']||hw['First Player']);
-    const o2=median(hw['Away']||hw['Player 2']||hw['Second Player']);
-    if(o1||o2) oddsCache.set(id,{o1:o1||null,o2:o2||null});
+
+    const r1=parseBookies(hw['Home']||hw['Player 1']||hw['First Player']);
+    const r2=parseBookies(hw['Away']||hw['Player 2']||hw['Second Player']);
+    if(r1.odds||r2.odds){
+      const allBookies=[...new Set([...r1.bookies,...r2.bookies])];
+      oddsCache.set(id,{
+        o1:r1.odds||null, o2:r2.odds||null,
+        bookies: allBookies.slice(0,8),          // lista de casas que tienen este partido
+        bookieCount: Math.max(r1.count||0,r2.count||0),
+        source: r1.source||r2.source||'AllSports', // primera casa conocida
+        ts: Date.now()
+      });
+    }
   });
 }
 async function fetchAllOdds(){
@@ -168,7 +204,7 @@ async function fetchAllOdds(){
     catch(e){console.warn('[ODDS]',e.message);}
   }
 }
-function getMatchOdds(e){ return oddsCache.get(String(e.event_key))||{o1:null,o2:null}; }
+function getMatchOdds(e){ return oddsCache.get(String(e.event_key))||{o1:null,o2:null,bookies:[],source:null,bookieCount:0}; }
 
 // ── Football ─────────────────────────────────────────────────────────────────
 function normF(m,code){
@@ -193,7 +229,7 @@ function normF(m,code){
     status:m.status,min,h:m.homeTeam?.shortName||m.homeTeam?.name||'?',a:m.awayTeam?.shortName||m.awayTeam?.name||'?',
     hc:m.homeTeam?.crest||null,ac:m.awayTeam?.crest||null,
     lh:shF,la:saF,lhLive:shF,laLive:saF,lhH:shH,laH:saH,g2,utcDate:m.utcDate,
-    a25:alerted.has('25_fd_'+m.id),a67:alerted.has('67_fd_'+m.id)};
+    a25:alertedHas('25_fd_'+m.id),a67:alertedHas('67_fd_'+m.id)};
 }
 async function fetchFootball(){
   if(!FOOTBALL_KEY) return;
@@ -213,8 +249,8 @@ function checkFootballAlerts(){
     const snap0=kickoffSnapshot.get(m.id);
     const knownGoals1h=Math.max(liveGoals1h,snap0?liveGoals1h-snap0.h-snap0.a:0);
     const k25='25_'+m.id;
-    if(m.min>=22&&m.min<=38&&!alerted.has(k25)&&knownGoals1h===0){
-      alerted.add(k25);
+    if(m.min>=22&&m.min<=38&&!alertedHas(k25)&&knownGoals1h===0){
+      alertedAdd(k25);
       simAlerts.unshift({id:k25+'_05',type:'football_ht_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:1});
       simAlerts.unshift({id:k25+'_15',type:'football_ht_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:1});
       if(simAlerts.length>500) simAlerts.length=500;
@@ -224,8 +260,8 @@ function checkFootballAlerts(){
     const snap=htSnapshot.get(m.id);
     const goals2h=snap!=null?Math.max(0,((m.lhLive||0)-snap.h)+((m.laLive||0)-snap.a)):0;
     const k67='67_'+m.id;
-    if(m.min>=63&&m.min<=78&&!alerted.has(k67)&&goals2h===0){
-      alerted.add(k67);
+    if(m.min>=63&&m.min<=78&&!alertedHas(k67)&&goals2h===0){
+      alertedAdd(k67);
       simAlerts.unshift({id:k67+'_05',type:'football_2h_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 2ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'sh_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:2});
       simAlerts.unshift({id:k67+'_15',type:'football_2h_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 2ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'sh_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:2});
       if(simAlerts.length>500) simAlerts.length=500;
@@ -390,10 +426,12 @@ function normT(e){
     }
   }
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
+  const od=getMatchOdds(e);
   return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
-    curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2};
+    curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2,
+    bookies:od.bookies||[], source:od.source||null, bookieCount:od.bookieCount||0};
 }
 function normTUp(e){
   const cat=getCat((e.country_name||'')+' '+(e.league_name||''));
@@ -458,8 +496,8 @@ function checkBreakRecovery(live){
     if(favG>0&&favG===rivG&&!rec.alertedRecovery){
       rec.alertedRecovery=true; rec.recovered=true;
       const krec=`rec_${m.id}_s${m.curSetNum}_${favG}`;
-      if(!alerted.has(krec)){
-        alerted.add(krec);
+      if(!alertedHas(krec)){
+        alertedAdd(krec);
         simAlerts.unshift({id:krec,type:'tennis_recovery',match:`${m.p1} vs ${m.p2}`,
           detail:`${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: empate ${favG}-${rivG}`,
           alertedAt:nowISO(),resolved:true,outcome:'RECOVERY',
@@ -474,13 +512,13 @@ function checkBreakRecovery(live){
 function checkFootballStart(){
   lastFootball.forEach(m=>{
     if(m.status!=='IN_PLAY') return;
-    const ks=`fstart_${m.id}`; if(alerted.has(ks)) return; alerted.add(ks);
+    const ks=`fstart_${m.id}`; if(alertedHas(ks)) return; alertedAdd(ks);
     sendTG(`${m.h} vs ${m.a} · ${m.league}\nPartido iniciado`);
   });
 }
 function checkMonitoredMatchStart(){
   lastTennis.filter(m=>!m.isUp&&m.mon&&m.pbpLen>0).forEach(m=>{
-    const ks=`start_${m.id}`; if(alerted.has(ks)) return; alerted.add(ks);
+    const ks=`start_${m.id}`; if(alertedHas(ks)) return; alertedAdd(ks);
     const favIs=(m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX)?'First Player':'Second Player';
     const favName=favIs==='First Player'?m.p1:m.p2, favO=favIs==='First Player'?m.o1:m.o2;
     sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nInicio monitorizado · fav ${favName} @${favO!=null?favO+'x':'n/d'}`);
@@ -490,7 +528,7 @@ function checkTennisAlerts(live){
   live.forEach(m=>{
     if(!isBreakAlert(m)) return;
     const kb=`brk_set_${m.id}_s${m.curSetNum}`;  // 1 alerta max por set
-    if(alerted.has(kb)) return; alerted.add(kb);
+    if(alertedHas(kb)) return; alertedAdd(kb);
     const favIs=(m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX)?'First Player':'Second Player';
     const favName=favIs==='First Player'?m.p1:m.p2, favO=favIs==='First Player'?m.o1:m.o2;
     const oddsband=favO==null?'n/d':favO<1.30?'1.20-1.30':favO<1.40?'1.30-1.40':favO<1.50?'1.40-1.50':'1.50-1.60';
@@ -499,7 +537,8 @@ function checkTennisAlerts(live){
       alertedAt:nowISO(),resolved:false,outcome:null,
       _eventId:m.id,_setNum:m.curSetNum,_favIs:favIs,
       _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],
-      _favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2});
+      _favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2,
+      _bookie:m.source||'AllSports',_bookies:m.bookies||[],_bookieCount:m.bookieCount||0});
     if(simAlerts.length>500) simAlerts.length=500;
     const setsStr=m.sets1.map((s,i)=>`${s}-${m.sets2[i]}`).join(' · ');
     sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak ${m.curSetNum}º set: ${m.g1}-${m.g2} · ${favName} roto\nFav @${favO!=null?favO+'x':'n/d'} → apostar gana set`);
@@ -515,22 +554,24 @@ function checkSet1Loss(live){
     const favName=favIs==='First Player'?m.p1:m.p2, favO=favIs==='First Player'?m.o1:m.o2;
     const oddsband=favO==null?'n/d':favO<1.30?'1.20-1.30':favO<1.40?'1.30-1.40':favO<1.50?'1.40-1.50':'1.50-1.60';
     const ks2=`set1loss_s2_${m.id}`, ksM=`set1loss_match_${m.id}`;
-    if(!alerted.has(ksM)){
-      if(!alerted.has(ks2)){
-        alerted.add(ks2);
+    if(!alertedHas(ksM)){
+      if(!alertedHas(ks2)){
+        alertedAdd(ks2);
         simAlerts.unshift({id:ks2,type:'tennis_set1_set2',match:`${m.p1} vs ${m.p2}`,
           detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana S2?`,
           alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_setNum:2,_favIs:favIs,
           _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,
-          _cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2});
+          _cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2,
+          _bookie:m.source||'AllSports',_bookies:m.bookies||[],_bookieCount:m.bookieCount||0});
         if(simAlerts.length>500) simAlerts.length=500;
       }
-      alerted.add(ksM);
+      alertedAdd(ksM);
       simAlerts.unshift({id:ksM,type:'tennis_set1_match',match:`${m.p1} vs ${m.p2}`,
         detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana partido?`,
         alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_favIs:favIs,
         _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,
-        _cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2});
+        _cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,_liveO1:m.o1,_liveO2:m.o2,
+        _bookie:m.source||'AllSports',_bookies:m.bookies||[],_bookieCount:m.bookieCount||0});
       if(simAlerts.length>500) simAlerts.length=500;
       sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nSet 1: ${m.sets1[0]}-${m.sets2[0]} · ${favName} pierde S1 @${favO!=null?favO+'x':'n/d'}\nApostar: gana S2 / gana partido`);
     }
@@ -583,7 +624,7 @@ async function poll(){
     resolveTennisSims();
     resolveFootballSims();
     lastUpdate=nowISO();
-    if(stats.pollCount%20===0) console.log(`[POLL #${stats.pollCount}] Tennis:${lastTennis.filter(m=>!m.isUp).length} Football:${lastFootball.filter(m=>m.status==='IN_PLAY').length} Odds:${oddsCache.size}`);
+    if(stats.pollCount%20===0){ cleanupAlerted(); console.log(`[POLL #${stats.pollCount}] Tennis:${lastTennis.filter(m=>!m.isUp).length} Football:${lastFootball.filter(m=>m.status==='IN_PLAY').length} Odds:${oddsCache.size} Alerted:${alerted.size}`); }
   }catch(e){stats.errors++;console.error('[POLL ERROR]',e.message);}
   setTimeout(poll, hasLiveMatches()?45000:180000);
 }
@@ -636,7 +677,7 @@ const server=http.createServer((req,res)=>{
       if(cat&&s.type==='tennis_recovery'){if(!catStats[cat])catStats[cat]={alerts:0,wins:0,losses:0,recoveries:0};catStats[cat].recoveries++;}
     });
     res.writeHead(200);
-    res.end(JSON.stringify({football:lastFootball,tennis:lastTennis,updated:lastUpdate,alerted:[...alerted],simAlerts:simAlerts.slice(0,200),oddStats,catStats,ftStats}));
+    res.end(JSON.stringify({football:lastFootball,tennis:lastTennis,updated:lastUpdate,alerted:[...alerted.keys()],simAlerts:simAlerts.slice(0,200),oddStats,catStats,ftStats}));
     return;
   }
 
