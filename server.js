@@ -1,647 +1,1025 @@
 'use strict';
-const http  = require('http');
+// ============================================================
+// Roturas25 — server.js v10
+// Railway · Node.js
+// ============================================================
+
 const https = require('https');
+const http  = require('http');
 
-process.on('uncaughtException',  e => { console.error('[UNCAUGHT]', e.message, e.stack); process.exit(1); });
-process.on('unhandledRejection', e => console.error('[UNHANDLED]', String(e)));
+// ── Config ──────────────────────────────────────────────────
+const PORT        = process.env.PORT || 3000;
+const API_KEY     = 'a8e248094b7d294e0a4eb421cd9945f291eb070e0c7cdc81dc03182e2b693063';
+const FB_URL      = 'https://roturas25-default-rtdb.europe-west1.firebasedatabase.app';
+const TG_TOKEN    = '8171273424:AAGMvAxhDnt-HSZSZi8DJeV0j6YEwhfHC5E';
+const TG_CHAT     = '6307700447';
+const ODD_MIN     = 1.20;
+const ODD_MAX     = 1.60;
 
-const FOOTBALL_KEY  = process.env.FOOTBALL_KEY  || '';
-const TENNIS_KEY    = process.env.TENNIS_KEY    || '';
-const THEODDS_KEY   = process.env.THEODDS_KEY   || '';
-const TG_TOKEN      = process.env.TG_TOKEN      || '8171273424:AAGMvAxhDnt-HSZSZi8DJeV0j6YEwhfHC5E';
-const TG_CHAT       = process.env.TG_CHAT       || '6307700447';
-const PORT          = parseInt(process.env.PORT  || '3000', 10);
-const ODD_MIN       = parseFloat(process.env.ODD_MIN || '1.20');
-const ODD_MAX       = parseFloat(process.env.ODD_MAX || '1.60');
+// ── State ────────────────────────────────────────────────────
+let lastTennis          = [];
+let lastFootball        = [];
+let nextFootball        = [];       // NEW: next 24h fixtures
+let simAlerts           = [];       // max 500
+const oddsCache         = new Map(); // NEW: live odds per match_id
+const breakRecoveries   = new Map();
+const htSnapshot        = new Map();
+const kickoffSnapshot   = new Map();
+const alerted           = new Set();
+const allFootballForSim = [];
+const surfaceCache      = new Map(); // NEW: tournament → surface
 
-const alerted       = new Map();
-const ALERTED_TTL   = 24*60*60*1000;
-function alertedHas(k){ const t=alerted.get(k); return t!=null&&(Date.now()-t)<ALERTED_TTL; }
-function alertedAdd(k){ alerted.set(k, Date.now()); }
-function cleanupAlerted(){ const c=Date.now()-ALERTED_TTL; for(const[k,t] of alerted) if(t<c) alerted.delete(k); }
+// ── BT fixed odds ────────────────────────────────────────────
+const BT_ODDS = { ft05: 1.80, ft15: 3.00, brk: 2.10, s2: 1.65, sm: 2.20 };
 
-let lastFootball=[], allFootballForSim=[], lastTennis=[], lastUpdate=null;
-const stats         = { pollCount:0, alertsSent:0, errors:0, oddsUpdates:0 };
-const simAlerts     = [];
-const htSnapshot    = new Map();
-const kickoffSnapshot = new Map();
-const breakRecoveries = new Map();
-const surfaceCache  = new Map();
-const oddsCache     = new Map();
-const ODDS_TTL      = 45*1000;
-
-const FB_URL = 'https://roturas25-default-rtdb.europe-west1.firebasedatabase.app';
-let fbSaveTimer = null;
-
-async function fbGet(path){
-  try{ return await fetchJson(FB_URL+path+'.json'); }
-  catch(e){ console.warn('[FB GET]',e.message); return null; }
-}
-async function fbPut(path,data){
-  return new Promise((res,rej)=>{
-    const body=JSON.stringify(data);
-    const url=new URL(FB_URL+path+'.json');
-    const r=https.request({hostname:url.hostname,path:url.pathname+url.search,
-      method:'PUT',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},
-      r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>res());});
-    r.on('error',rej); r.write(body); r.end();
-  });
-}
-async function fbDelete(path){
-  return new Promise((res,rej)=>{
-    const url=new URL(FB_URL+path+'.json');
-    const r=https.request({hostname:url.hostname,path:url.pathname+url.search,method:'DELETE'},
-      r=>{r.resume();r.on('end',res);});
-    r.on('error',rej); r.end();
-  });
-}
-function scheduleFbSave(){
-  if(fbSaveTimer) return;
-  fbSaveTimer=setTimeout(async()=>{
-    fbSaveTimer=null;
-    try{
-      await fbPut('/state/alerted', Object.fromEntries(alerted));
-      await fbPut('/state/sims',    simAlerts.slice(0,500));
-      console.log('[FB] Estado guardado. alerted:',alerted.size,'sims:',simAlerts.length);
-    }catch(e){console.warn('[FB SAVE]',e.message);}
-  },3000);
-}
-async function loadStateFromFB(){
-  console.log('[FB] Cargando estado previo...');
-  try{
-    const savedAlerted=await fbGet('/state/alerted');
-    if(savedAlerted&&typeof savedAlerted==='object'){
-      const entries=Array.isArray(savedAlerted)
-        ?savedAlerted.map(k=>[k,Date.now()])
-        :Object.entries(savedAlerted);
-      entries.forEach(([k,t])=>alerted.set(k,typeof t==='number'?t:Date.now()));
-      cleanupAlerted();
-      console.log('[FB] alerted restaurado:',alerted.size,'claves');
-    }
-    const savedSims=await fbGet('/state/sims');
-    if(Array.isArray(savedSims)&&savedSims.length){
-      simAlerts.push(...savedSims);
-      console.log('[FB] simAlerts restaurado:',simAlerts.length);
-    }
-  }catch(e){console.warn('[FB LOAD]',e.message);}
-}
-
-function todayStr(){ return new Date().toISOString().split('T')[0]; }
-function tomorrowStr(){ return new Date(Date.now()+86400000).toISOString().split('T')[0]; }
-function nowISO(){ return new Date().toISOString(); }
-
-function fetchJson(url,headers={}){
-  return new Promise((resolve,reject)=>{
-    const req=https.get(url,{headers},res=>{
-      let d=''; res.on('data',c=>d+=c);
-      res.on('end',()=>{try{resolve(JSON.parse(d));}catch(e){reject(new Error('JSON:'+d.slice(0,80)));}});
-    });
-    req.on('error',reject);
-    req.setTimeout(12000,()=>{req.destroy();reject(new Error('Timeout'));});
-  });
-}
-async function sendTG(msg){
-  if(!TG_TOKEN||!TG_CHAT) return;
-  try{
-    const body=JSON.stringify({chat_id:TG_CHAT,text:msg});
-    await new Promise((res,rej)=>{
-      const r=https.request({hostname:'api.telegram.org',path:`/bot${TG_TOKEN}/sendMessage`,method:'POST',
-        headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},
-        r=>{r.resume();r.on('end',res);});
-      r.on('error',rej); r.write(body); r.end();
-    });
-    stats.alertsSent++;
-  }catch(e){console.error('[TG]',e.message);}
-}
-function hasLiveMatches(){
-  return lastFootball.some(m=>m.status==='IN_PLAY'||m.status==='PAUSED')
-      || lastTennis.some(m=>!m.isUp);
-}
-function isDoubles(e){
-  const p1=(e.event_first_player||'').trim(),p2=(e.event_second_player||'').trim(),lg=(e.league_name||'').toLowerCase();
-  return p1.includes('/')||p2.includes('/')||lg.includes('double')||lg.includes('doble');
-}
-
-// ═══════════════════════════════════════════════════════════
-// ODDS ENGINE
-// ═══════════════════════════════════════════════════════════
-function parseBookiesFromAllSports(obj){
-  if(!obj||typeof obj!=='object') return {odds:null,bookies:[],source:null,count:0};
-  const entries=Object.entries(obj).map(([bk,v])=>({bk,odds:parseFloat(v)})).filter(x=>!isNaN(x.odds)&&x.odds>1);
-  if(!entries.length) return {odds:null,bookies:[],source:null,count:0};
-  entries.sort((a,b)=>a.odds-b.odds);
-  const mid=entries[Math.floor(entries.length/2)];
-  const KNOWN=['Bet365','Betway','1xBet','Unibet','William Hill','Pinnacle','Bwin','Betfair','Ladbrokes','Coral','10Bet','Marathonbet'];
-  const sorted=[...entries].sort((a,b)=>{const ai=KNOWN.indexOf(a.bk),bi=KNOWN.indexOf(b.bk);return(ai===-1?99:ai)-(bi===-1?99:bi);});
-  return{odds:Math.round(mid.odds*100)/100,bookies:sorted.map(e=>e.bk).slice(0,8),source:sorted[0]?.bk||mid.bk,count:entries.length};
-}
-
-function buildTennisOddsCache(result){
-  if(!result||typeof result!=='object') return;
-  let updated=0;
-  Object.entries(result).forEach(([id,data])=>{
-    const ex=oddsCache.get(id);
-    if(ex&&(Date.now()-ex.ts)<ODDS_TTL) return;
-    const hw=data['Home/Away']||data['1X2']||data['Match Winner']||data['Winner']||null;
-    if(!hw) return;
-    const r1=parseBookiesFromAllSports(hw['Home']||hw['Player 1']||hw['First Player']);
-    const r2=parseBookiesFromAllSports(hw['Away']||hw['Player 2']||hw['Second Player']);
-    if(!r1.odds&&!r2.odds) return;
-    const allBookies=[...new Set([...r1.bookies,...r2.bookies])];
-    const existing=oddsCache.get(id)||{};
-    oddsCache.set(id,{
-      ...existing,
-      o1:r1.odds||null, o2:r2.odds||null,
-      preMatch:existing.preMatch||{o1:r1.odds||null,o2:r2.odds||null},
-      bookies:allBookies.slice(0,8), bookieCount:Math.max(r1.count,r2.count),
-      source:r1.source||r2.source||'AllSports', ts:Date.now(),
-    });
-    updated++;
-  });
-  if(updated>0){stats.oddsUpdates+=updated;console.log(`[ODDS-T] ${updated} partidos actualizados`);}
-}
-
-async function fetchTennisOdds(){
-  if(!TENNIS_KEY) return;
-  try{
-    const r=await fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Odds&APIkey=${TENNIS_KEY}&from=${todayStr()}&to=${tomorrowStr()}`);
-    if(r.success&&r.result) buildTennisOddsCache(r.result);
-  }catch(e){console.warn('[ODDS-T]',e.message);}
-}
-
-// TheOddsAPI — live odds fútbol (Over/Under + H2H)
-// Registrarse: https://the-odds-api.com/ → Get API Key (500 req gratis/mes)
-// Plan Starter: $12.99/mes → 50.000 req/mes (suficiente para 30s polling)
-// Configurar en Railway: THEODDS_KEY=tu_api_key
-const THEODDS_SPORTS=['soccer_spain_la_liga','soccer_england_premier_league'];
-async function fetchFootballLiveOdds(){
-  if(!THEODDS_KEY) return;
-  for(const sport of THEODDS_SPORTS){
-    try{
-      const url=`https://api.the-odds-api.com/v4/sports/${sport}/odds/?apiKey=${THEODDS_KEY}&regions=eu&markets=h2h,totals&oddsFormat=decimal`;
-      const r=await fetchJson(url);
-      if(!Array.isArray(r)) continue;
-      r.forEach(event=>{
-        const hName=(event.home_team||'').toLowerCase();
-        const aName=(event.away_team||'').toLowerCase();
-        const ftMatch=lastFootball.find(m=>(m.h||'').toLowerCase().includes(hName.split(' ')[0])||
-          (m.a||'').toLowerCase().includes(aName.split(' ')[0]));
-        const cacheKey=ftMatch?ftMatch.id:`ft_${event.id}`;
-        let h2hO1=null,h2hO2=null,over05=null,over15=null;
-        const bookieList=[];
-        (event.bookmakers||[]).forEach(bm=>{
-          bookieList.push(bm.key);
-          (bm.markets||[]).forEach(mkt=>{
-            if(mkt.key==='h2h') mkt.outcomes.forEach(o=>{
-              if(o.name===event.home_team) h2hO1=h2hO1?(h2hO1+o.price)/2:o.price;
-              if(o.name===event.away_team) h2hO2=h2hO2?(h2hO2+o.price)/2:o.price;
-            });
-            if(mkt.key==='totals') mkt.outcomes.forEach(o=>{
-              if(o.name==='Over'&&o.point===0.5) over05=over05?(over05+o.price)/2:o.price;
-              if(o.name==='Over'&&o.point===1.5) over15=over15?(over15+o.price)/2:o.price;
-            });
-          });
-        });
-        const r2=v=>v?Math.round(v*100)/100:null;
-        const existing=oddsCache.get(cacheKey)||{};
-        oddsCache.set(cacheKey,{...existing,o1:r2(h2hO1),o2:r2(h2hO2),
-          over05:r2(over05),over15:r2(over15),
-          preMatch:existing.preMatch||{o1:r2(h2hO1),o2:r2(h2hO2)},
-          bookies:[...new Set(bookieList)].slice(0,6),source:'TheOddsAPI',bookieCount:bookieList.length,ts:Date.now()});
+// ── Utility: HTTP GET → JSON ─────────────────────────────────
+function fetchJSON(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, { timeout: 10000 }, res => {
+      let buf = '';
+      res.on('data', d => buf += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(buf)); }
+        catch(e) { reject(new Error('JSON parse error: ' + e.message)); }
       });
-      console.log(`[ODDS-F] ${sport}: ${r.length} partidos`);
-    }catch(e){console.warn('[ODDS-F]',e.message);}
-  }
-}
-function getMatchOdds(e){ return oddsCache.get(String(e.event_key))||oddsCache.get('fd_'+e.event_key)||{o1:null,o2:null,over05:null,over15:null,preMatch:null,bookies:[],source:null,bookieCount:0}; }
-function getFootballOdds(matchId){ return oddsCache.get(matchId)||{o1:null,o2:null,over05:null,over15:null,preMatch:null,bookies:[],source:null,bookieCount:0}; }
-
-// ═══════════════════════════════════════════════════════════
-// FOOTBALL
-// ═══════════════════════════════════════════════════════════
-function normF(m,code){
-  const shF=m.score?.fullTime?.home??m.score?.home??0;
-  const saF=m.score?.fullTime?.away??m.score?.away??0;
-  const shH=m.score?.halfTime?.home??null;
-  const saH=m.score?.halfTime?.away??null;
-  let min=0;
-  if(m.status==='PAUSED'){min=45;}
-  else if(m.status==='IN_PLAY'){
-    if(m.minute!=null&&m.minute>0){min=m.minute+(m.injuryTime||0);}
-    else{const startTs=m.utcDate?new Date(m.utcDate).getTime():0;if(startTs>0){const el=Math.floor((Date.now()-startTs)/60000);min=el<=47?el:el<=62?45:Math.min(45+(el-62),90);}}
-  }
-  const g2=shH!=null?Math.max(0,(shF-shH)+(saF-saH)):0;
-  const fid='fd_'+m.id;
-  const od=getFootballOdds(fid);
-  return{id:fid,league:code==='PD'?'LaLiga EA Sports':'Premier League',k:code==='PD'?'laliga':'premier',
-    status:m.status,min,h:m.homeTeam?.shortName||m.homeTeam?.name||'?',a:m.awayTeam?.shortName||m.awayTeam?.name||'?',
-    hc:m.homeTeam?.crest||null,ac:m.awayTeam?.crest||null,
-    lh:shF,la:saF,lhLive:shF,laLive:saF,lhH:shH,laH:saH,g2,utcDate:m.utcDate,
-    o1:od.o1,o2:od.o2,over05:od.over05,over15:od.over15,
-    preMatchO1:od.preMatch?.o1,preMatchO2:od.preMatch?.o2,
-    bookies:od.bookies||[],source:od.source||null,
-    a25:alertedHas('25_fd_'+m.id),a67:alertedHas('67_fd_'+m.id)};
-}
-async function fetchFootball(){
-  if(!FOOTBALL_KEY) return;
-  const[t,tm]=[todayStr(),tomorrowStr()];
-  const[pd,pl]=await Promise.all([
-    fetchJson(`https://api.football-data.org/v4/competitions/PD/matches?dateFrom=${t}&dateTo=${tm}`,{'X-Auth-Token':FOOTBALL_KEY}),
-    fetchJson(`https://api.football-data.org/v4/competitions/PL/matches?dateFrom=${t}&dateTo=${tm}`,{'X-Auth-Token':FOOTBALL_KEY}),
-  ]);
-  const all=[...(pd.matches||[]).map(m=>normF(m,'PD')),...(pl.matches||[]).map(m=>normF(m,'PL'))];
-  allFootballForSim=all; lastFootball=all.filter(m=>m.status!=='FINISHED');
-}
-function checkFootballAlerts(){
-  lastFootball.forEach(m=>{
-    if(m.status!=='IN_PLAY') return;
-    if(m.min>=1&&m.min<=8&&!kickoffSnapshot.has(m.id)) kickoffSnapshot.set(m.id,{h:m.lhLive||0,a:m.laLive||0});
-    const liveGoals1h=(m.lhLive||0)+(m.laLive||0);
-    const snap0=kickoffSnapshot.get(m.id);
-    const knownGoals1h=Math.max(liveGoals1h,snap0?liveGoals1h-snap0.h-snap0.a:0);
-    const k25='25_'+m.id;
-    if(m.min>=22&&m.min<=38&&!alertedHas(k25)&&knownGoals1h===0){
-      alertedAdd(k25);
-      const od=getFootballOdds(m.id);
-      simAlerts.unshift({id:k25+'_05',type:'football_ht_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:1,_liveO1:m.o1,_liveO2:m.o2,_liveOver05:od.over05,_liveOver15:od.over15,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,_bookies:od.bookies,_source:od.source});
-      simAlerts.unshift({id:k25+'_15',type:'football_ht_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 1ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'ht_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:1,_liveO1:m.o1,_liveO2:m.o2,_liveOver05:od.over05,_liveOver15:od.over15,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,_bookies:od.bookies,_source:od.source});
-      if(simAlerts.length>500) simAlerts.length=500;
-      const odStr=od.over05?` · +0.5@${od.over05}x +1.5@${od.over15||'?'}x`:'';
-      sendTG(`${m.h} vs ${m.a} · ${m.league}\nMin.${m.min} · 0-0 1ªP${odStr}`);
-    }
-    if(m.min>=46&&m.min<=50&&m.lhH!=null&&!htSnapshot.has(m.id)) htSnapshot.set(m.id,{h:m.lhH,a:m.laH});
-    const snap=htSnapshot.get(m.id);
-    const goals2h=snap!=null?Math.max(0,((m.lhLive||0)-snap.h)+((m.laLive||0)-snap.a)):0;
-    const k67='67_'+m.id;
-    if(m.min>=63&&m.min<=78&&!alertedHas(k67)&&goals2h===0){
-      alertedAdd(k67);
-      const od=getFootballOdds(m.id);
-      simAlerts.unshift({id:k67+'_05',type:'football_2h_05',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 2ªP +0.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'sh_goal',_market:'+0.5',_nominalStake:50,_league:m.league,_half:2,_liveO1:m.o1,_liveO2:m.o2,_liveOver05:od.over05,_liveOver15:od.over15,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,_bookies:od.bookies,_source:od.source});
-      simAlerts.unshift({id:k67+'_15',type:'football_2h_15',match:`${m.h} vs ${m.a}`,detail:`${m.league} · ~Min.${m.min} · 2ªP +1.5`,alertedAt:nowISO(),resolved:false,outcome:null,_matchId:m.id.replace('fd_',''),_resolveOn:'sh_goal_15',_market:'+1.5',_nominalStake:25,_league:m.league,_half:2,_liveO1:m.o1,_liveO2:m.o2,_liveOver05:od.over05,_liveOver15:od.over15,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,_bookies:od.bookies,_source:od.source});
-      if(simAlerts.length>500) simAlerts.length=500;
-      const odStr=od.over05?` · +0.5@${od.over05}x +1.5@${od.over15||'?'}x`:'';
-      sendTG(`${m.h} vs ${m.a} · ${m.league}\nMin.${m.min} · 0-0 2ªP${odStr}`);
-    }
-  });
-}
-function resolveFootballSims(){
-  simAlerts.forEach(s=>{
-    if(s.resolved||!s._matchId) return;
-    const m=allFootballForSim.find(x=>x.id==='fd_'+s._matchId); if(!m) return;
-    const pastHT=m.status==='PAUSED'||m.status==='FINISHED'||(m.status==='IN_PLAY'&&m.min>45);
-    const goalsHT=(m.lhH||0)+(m.laH||0);
-    if(s._resolveOn==='ht_goal'&&pastHT){s.outcome=goalsHT>=1?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();}
-    if(s._resolveOn==='ht_goal_15'&&pastHT){s.outcome=goalsHT>=2?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();}
-    if(s._resolveOn==='sh_goal'&&m.status==='FINISHED'){s.outcome=m.g2>=1?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();}
-    if(s._resolveOn==='sh_goal_15'&&m.status==='FINISHED'){s.outcome=m.g2>=2?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();}
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 
-// ═══════════════════════════════════════════════════════════
-// TENNIS
-// ═══════════════════════════════════════════════════════════
-function getCat(s){
-  const l=(s||'').toLowerCase();
-  if(l.includes('itf')){const isW=l.includes('women')||l.includes(' w ')||/\bitf w\d/i.test(s)||/\bw\d{1,3}\b/.test(s)||l.includes('wta')||l.includes('female')||l.includes('ladies');return isW?'itf_f':'itf_m';}
-  if(l.includes('125')||l.includes('w125')||l.includes('wta 125')) return 'wta125';
-  if(l.includes('wta')) return 'wta';
-  const isFemale=l.includes('women')||l.includes('female')||l.includes('ladies')||l.includes(' w ')||/\bw\d{1,3}\b/.test(s);
-  if(isFemale&&l.includes('challenger')) return 'wta125';
-  if(isFemale) return 'wta';
-  if(l.includes('challenger')) return 'challenger';
-  return 'atp';
+// ── Firebase ─────────────────────────────────────────────────
+function fbPut(path, data) {
+  return new Promise((resolve, reject) => {
+    const body   = Buffer.from(JSON.stringify(data));
+    const opts   = {
+      hostname : 'roturas25-default-rtdb.europe-west1.firebasedatabase.app',
+      path     : path + '.json',
+      method   : 'PUT',
+      headers  : { 'Content-Type': 'application/json', 'Content-Length': body.length }
+    };
+    const req = https.request(opts, res => {
+      let buf = '';
+      res.on('data', d => buf += d);
+      res.on('end', () => resolve(buf));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
-function getTier(s){
-  const l=(s||'').toLowerCase();
-  if(l.includes('grand slam')||l.includes('australian open')||l.includes('roland garros')||l.includes('wimbledon')||l.includes('us open')) return 'slam';
-  if(l.includes('masters 1000')||l.includes('atp 1000')||l.includes('atp1000')) return 'atp1000';
-  if(l.includes('atp 500')||l.includes('atp500')) return 'atp500';
-  if(l.includes('atp 250')||l.includes('atp250')) return 'atp250';
-  if(l.includes('wta 1000')||l.includes('wta1000')) return 'wta1000';
-  if(l.includes('wta 500')||l.includes('wta500')) return 'wta500';
-  if(l.includes('wta 250')||l.includes('wta250')) return 'wta250';
-  if(l.includes('125')||l.includes('w125')||l.includes('wta 125')) return 'wta125';
-  const isFemale=l.includes('wta')||l.includes('women')||l.includes('female')||l.includes('ladies')||/\bw\d{1,3}\b/.test(s);
-  if(isFemale&&l.includes('challenger')) return 'wta125';
-  if(l.includes('challenger')&&!isFemale) return 'challenger';
-  if(l.includes('itf')) return 'itf';
-  if(isFemale) return 'wta_other';
-  return 'atp_other';
+function fbGet(path) {
+  return fetchJSON(`${FB_URL}${path}.json`);
 }
-function normalizeRound(raw){
-  if(!raw||!raw.trim()) return null;
-  const r=raw.toLowerCase().trim().replace(/-.*$/,'').trim();
-  if(r.includes('final')&&(r.includes('quarter')||r.includes('1/4'))) return 'qf';
-  if(r.includes('final')&&(r.includes('semi')||r.includes('1/2'))) return 'sf';
-  if(r==='final'||r==='the final') return 'f';
-  if(r.includes('1/8')||r.includes('round of 16')||r.includes('r16')) return 'r16';
-  if(r.includes('1/16')||r.includes('round of 32')||r.includes('r32')) return 'r32';
-  if(r.includes('1/32')||r.includes('round of 64')||r.includes('r64')) return 'r64';
-  if(r.includes('1/64')||r.includes('round of 128')||r.includes('r128')) return 'r128';
-  if(r.includes('qualif')||r.includes('qual.')) return 'q';
-  if(r.includes('round robin')||r.includes('group')) return 'rr';
-  if(r.match(/round (\d+)/)) return 'r'+r.match(/round (\d+)/)[1];
-  return raw.trim().slice(0,20);
+
+// ── Telegram ─────────────────────────────────────────────────
+function tg(text) {
+  if (!text) return;
+  const body   = Buffer.from(JSON.stringify({ chat_id: TG_CHAT, text, parse_mode: 'HTML' }));
+  const opts   = {
+    hostname : 'api.telegram.org',
+    path     : `/bot${TG_TOKEN}/sendMessage`,
+    method   : 'POST',
+    headers  : { 'Content-Type': 'application/json', 'Content-Length': body.length }
+  };
+  const req = https.request(opts, () => {});
+  req.on('error', () => {});
+  req.write(body);
+  req.end();
 }
-function getSurface(trn,country,leagueKey){
-  if(leagueKey&&surfaceCache.has(String(leagueKey))) return surfaceCache.get(String(leagueKey));
-  const l=(trn||'').toLowerCase()+' '+(country||'').toLowerCase();
-  if(l.match(/roland garros|monte.carlo|madrid|barcelona|rome|roma|hamburg|estoril|munich|lyon|bucharest|istanbul|marrakech|geneva|nice|bastad|gstaad|umag|kitzbuhel|clay|tierra|cordoba|buenos aires|bogota|santiago|sao paulo|rio|casablanca|rabat|parma|prague|warsaw|strasbourg|nuremberg/)) return 'clay';
-  if(l.match(/wimbledon|queens|halle|s-hertogenbosch|eastbourne|nottingham|grass|hierba|birmingham|bad homburg|mallorca|rosmalen/)) return 'grass';
-  if(l.match(/rotterdam|marseille|metz|sofia|montpellier|indoor|cubierto|st. petersburg|moscow|vienna|wien|paris bercy|stockholm|basilea|basel|antwerp/)) return 'hard_i';
+
+// ── normT() ─ tennis score normaliser ────────────────────────
+function normT(m) {
+  const sc = m.scores || [];
+  const sets1 = [], sets2 = [];
+  let cs = 0;
+  for (const s of sc) {
+    const a = +s.score_first || 0, b = +s.score_second || 0;
+    const done = (a >= 6 || b >= 6) && (Math.abs(a-b) >= 2 || a >= 7 || b >= 7);
+    if (done) { sets1.push(a); sets2.push(b); cs = sets1.length; }
+  }
+  let g1 = 0, g2 = 0;
+  const p1 = m.event_first_player_score_current_set;
+  const p2 = m.event_second_player_score_current_set;
+  if (p1 != null && p2 != null) { g1 = +p1; g2 = +p2; }
+  else if (sc[cs]) { g1 = +sc[cs].score_first || 0; g2 = +sc[cs].score_second || 0; }
+
+  let pt1 = '', pt2 = '';
+  const gr = m.event_game_result || '';
+  if (gr) { const pts = gr.split(' - '); pt1 = pts[0]||''; pt2 = pts[1]||''; }
+
+  const fav = (m.event_home_team_odds != null && m.event_away_team_odds != null)
+    ? (m.event_home_team_odds <= m.event_away_team_odds ? 'home' : 'away')
+    : 'home';
+
+  return { sets1, sets2, g1, g2, pt1, pt2, fav, setNum: cs + 1 };
+}
+
+// ── surfaceForTournament ─────────────────────────────────────
+function surfaceForTournament(tournamentName) {
+  if (!tournamentName) return 'hard';
+  const t = tournamentName.toLowerCase();
+  if (t.includes('clay') || t.includes('tierra') || t.includes('roland') ||
+      t.includes('monte') || t.includes('madrid') || t.includes('barcelona') ||
+      t.includes('rome') || t.includes('roma') || t.includes('hamburg') ||
+      t.includes('stuttgart') || t.includes('munich') || t.includes('estoril') ||
+      t.includes('bucharest') || t.includes('budapest') || t.includes('lyon') ||
+      t.includes('geneva') || t.includes('prague') || t.includes('marrakech') ||
+      t.includes('bogota') || t.includes('santiago') || t.includes('buenos')) {
+    return 'clay';
+  }
+  if (t.includes('grass') || t.includes('wimbledon') || t.includes('halle') ||
+      t.includes('eastbourne') || t.includes('s-hertogenbosch') || t.includes('nottingham') ||
+      t.includes('queens') || t.includes("queen's")) {
+    return 'grass';
+  }
   return 'hard';
 }
-function normT(e){
-  const _trnFull=(e.country_name||'')+' '+(e.league_name||'');
-  const cat=getCat(_trnFull),tier=getTier(e.league_name||''),surface=getSurface(e.league_name||'',e.country_name||'',e.league_key),round=normalizeRound(e.league_round||'');
-  const od=getMatchOdds(e);
-  const{o1,o2}=od;
-  const scores=e.scores||[];
-  const cs=scores.filter(s=>{const a=parseInt(s.score_first)||0,b=parseInt(s.score_second)||0;return(a>=6||b>=6)&&(Math.abs(a-b)>=2||a>=7||b>=7);});
-  const sets1=cs.map(s=>parseInt(s.score_first)||0),sets2=cs.map(s=>parseInt(s.score_second)||0);
-  const curSetNum=cs.length+1;
-  const cr1=parseInt(e.event_first_player_score_current_set),cr2=parseInt(e.event_second_player_score_current_set);
-  let g1=String(!isNaN(cr1)?cr1:0),g2=String(!isNaN(cr2)?cr2:0);
-  const pbp=e.pointbypoint||[];
-  const curGames=pbp.filter(g=>g.set_number==='Set '+curSetNum);
-  if(g1==='0'&&g2==='0'){const ir=scores.find((s,i)=>i===cs.length);if(ir){const a=parseInt(ir.score_first),b=parseInt(ir.score_second);if(!isNaN(a)&&!isNaN(b)){g1=String(a);g2=String(b);}}}
-  if(g1==='0'&&g2==='0'&&curGames.length>0){const lp=curGames[curGames.length-1];if(lp?.score){const sp=(lp.score||'').split(' - ');if(sp.length===2){g1=sp[0].trim();g2=sp[1].trim();}}}
-  const rawPt=(e.event_game_result||'').trim();
-  let pt1='',pt2='';
-  if(rawPt&&rawPt!=='0 - 0'&&rawPt!=='-'){const spt=rawPt.split(' - ');if(spt.length===2){pt1=spt[0].trim();pt2=spt[1].trim();}}
-  let lastBreak=null;
-  for(let i=curGames.length-1;i>=0;i--){const g=curGames[i];if(g?.serve_lost!=null&&g.serve_lost!==''){const sp=(g.score||'').split(' - ');lastBreak={setLabel:g.set_number,gameNum:String(g.number_game??i),broken:g.serve_lost,gP1:parseInt(sp[0])||0,gP2:parseInt(sp[1])||0};break;}}
-  const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
-    p1:e.event_first_player||'?',p2:e.event_second_player||'?',
-    o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
-    curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2,
-    preMatchO1:od.preMatch?.o1||null,preMatchO2:od.preMatch?.o2||null,
-    bookies:od.bookies||[],source:od.source||null,bookieCount:od.bookieCount||0};
-}
-function normTUp(e){
-  const cat=getCat((e.country_name||'')+' '+(e.league_name||'')),tier=getTier(e.league_name||''),surface=getSurface(e.league_name||'',e.country_name||'',e.league_key),round=normalizeRound(e.league_round||'');
-  let dt;try{dt=new Date(`${e.event_date}T${e.event_time||'00:00'}:00`);}catch{dt=new Date();}
-  if(isNaN(dt.getTime())) dt=new Date();
-  const od=getMatchOdds(e);const{o1,o2}=od;
-  const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  return{id:'tdu_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
-    p1:e.event_first_player||'?',p2:e.event_second_player||'?',o1,o2,mon,hasOdds:o1!=null||o2!=null,
-    localT:dt.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Madrid'}),
-    localD:dt.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'2-digit'}),
-    _ts:dt.getTime(),isUp:true};
-}
-async function loadSurfaceCache(){
-  if(!TENNIS_KEY) return;
-  try{
-    const r=await fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Countries&APIkey=${TENNIS_KEY}`);
-    if(!r.result) return;
-    let loaded=0;
-    r.result.forEach(t=>{if(!t.league_key||!t.league_surface)return;const raw=(t.league_surface||'').toLowerCase().trim();let surf='hard';if(raw.includes('clay'))surf='clay';else if(raw.includes('grass'))surf='grass';else if(raw.includes('carpet')||raw.includes('indoor'))surf='hard_i';surfaceCache.set(String(t.league_key),surf);loaded++;});
-    console.log(`[SURFACE] Cache: ${loaded} torneos`);
-  }catch(e){console.warn('[SURFACE]',e.message);}
-}
-async function fetchTennis(){
-  if(!TENNIS_KEY) return [];
-  await fetchTennisOdds();
-  const[lR,uR]=await Promise.allSettled([
-    fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Livescore&APIkey=${TENNIS_KEY}`),
-    fetchJson(`https://apiv2.allsportsapi.com/tennis/?met=Fixtures&APIkey=${TENNIS_KEY}&from=${todayStr()}&to=${tomorrowStr()}`),
-  ]);
-  const liveRaw=(lR.status==='fulfilled'&&lR.value.result)?lR.value.result:[];
-  const upRaw=(uR.status==='fulfilled'&&uR.value.result)?uR.value.result:[];
-  const liveSingles=liveRaw.filter(e=>!isDoubles(e)&&e.event_status!=='Finished');
-  const upSingles=upRaw.filter(e=>e.event_live==='0'&&!isDoubles(e));
-  const live=liveSingles.map(normT),up=upSingles.map(normTUp);
-  const liveFiltered=live.filter(m=>m.mon);
-  lastTennis=[...liveFiltered,...up];
-  console.log(`[TENNIS] Live:${live.length} mon:${liveFiltered.length} Up:${up.length} Odds:${oddsCache.size}`);
-  return liveFiltered;
-}
-function isBreakAlert(m){
-  if(!m.lastBreak||m.isUp) return false;
-  const favIs=m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'First Player':m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX?'Second Player':null;
-  if(!favIs||m.lastBreak.broken!==favIs) return false;
-  const favG=favIs==='First Player'?parseInt(m.g1):parseInt(m.g2);
-  const rivG=favIs==='First Player'?parseInt(m.g2):parseInt(m.g1);
-  if(rivG<=favG) return false;
-  const brkRivG=favIs==='First Player'?m.lastBreak.gP2:m.lastBreak.gP1;
-  return rivG===brkRivG;
-}
-function checkTennisAlerts(live){
-  live.forEach(m=>{
-    if(!isBreakAlert(m)) return;
-    const kb=`brk_set_${m.id}_s${m.curSetNum}`;
-    if(alertedHas(kb)) return; alertedAdd(kb);
-    const favIs=(m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX)?'First Player':'Second Player';
-    const favName=favIs==='First Player'?m.p1:m.p2,favO=favIs==='First Player'?m.o1:m.o2;
-    const oddsband=favO==null?'n/d':favO<1.30?'1.20-1.30':favO<1.40?'1.30-1.40':favO<1.50?'1.40-1.50':'1.50-1.60';
-    simAlerts.unshift({id:kb,type:'tennis_break',match:`${m.p1} vs ${m.p2}`,
-      detail:`${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: ${m.lastBreak.gP1}–${m.lastBreak.gP2} · Fav ROTO: ${favName}`,
-      alertedAt:nowISO(),resolved:false,outcome:null,
-      _eventId:m.id,_setNum:m.curSetNum,_favIs:favIs,
-      _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],
-      _favO:favO,_oddsband:oddsband,_cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,
-      _liveO1:m.o1,_liveO2:m.o2,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,
-      _bookie:m.source||'AllSports',_bookies:m.bookies||[],_bookieCount:m.bookieCount||0});
-    if(simAlerts.length>500) simAlerts.length=500;
-    sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak ${m.curSetNum}º set: ${m.g1}-${m.g2} · ${favName} roto\npre:${m.preMatchO1||'?'}x live:${favO!=null?favO+'x':'n/d'}`);
-  });
-  scheduleFbSave();
-}
-function checkSet1Loss(live){
-  live.forEach(m=>{
-    const favIs=m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'First Player':m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX?'Second Player':null;
-    if(!favIs||m.sets1.length!==1) return;
-    const fav1=favIs==='First Player'?m.sets1[0]:m.sets2[0],riv1=favIs==='First Player'?m.sets2[0]:m.sets1[0];
-    if(fav1>=riv1) return;
-    const favName=favIs==='First Player'?m.p1:m.p2,favO=favIs==='First Player'?m.o1:m.o2;
-    const oddsband=favO==null?'n/d':favO<1.30?'1.20-1.30':favO<1.40?'1.30-1.40':favO<1.50?'1.40-1.50':'1.50-1.60';
-    const ks2=`set1loss_s2_${m.id}`,ksM=`set1loss_match_${m.id}`;
-    if(!alertedHas(ksM)){
-      if(!alertedHas(ks2)){
-        alertedAdd(ks2);
-        simAlerts.unshift({id:ks2,type:'tennis_set1_set2',match:`${m.p1} vs ${m.p2}`,
-          detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana S2?`,
-          alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_setNum:2,_favIs:favIs,
-          _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,
-          _cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,
-          _liveO1:m.o1,_liveO2:m.o2,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,
-          _bookie:m.source||'AllSports',_bookies:m.bookies||[],_bookieCount:m.bookieCount||0});
-        if(simAlerts.length>500) simAlerts.length=500;
-      }
-      alertedAdd(ksM);
-      simAlerts.unshift({id:ksM,type:'tennis_set1_match',match:`${m.p1} vs ${m.p2}`,
-        detail:`${m.trn} [${m.cat.toUpperCase()}] · Set1: ${m.sets1[0]}-${m.sets2[0]} · Fav pierde S1 → Gana partido?`,
-        alertedAt:nowISO(),resolved:false,outcome:null,_eventId:m.id,_favIs:favIs,
-        _setsP1atAlert:[...m.sets1],_setsP2atAlert:[...m.sets2],_favO:favO,_oddsband:oddsband,
-        _cat:m.cat,_tier:m.tier,_surface:m.surface,_round:m.round,
-        _liveO1:m.o1,_liveO2:m.o2,_preMatchO1:m.preMatchO1,_preMatchO2:m.preMatchO2,
-        _bookie:m.source||'AllSports',_bookies:m.bookies||[],_bookieCount:m.bookieCount||0});
-      if(simAlerts.length>500) simAlerts.length=500;
-      sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nSet 1: ${m.sets1[0]}-${m.sets2[0]} · ${favName} pierde S1\npre:${m.preMatchO1||'?'}x live:${favO!=null?favO+'x':'n/d'}\nApostar: gana S2 / gana partido`);
-    }
-  });
-  scheduleFbSave();
-}
-function checkBreakRecovery(live){
-  live.forEach(m=>{
-    const favIs=m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'First Player':m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX?'Second Player':null;
-    if(!favIs) return;
-    const favG=parseInt(favIs==='First Player'?m.g1:m.g2)||0,rivG=parseInt(favIs==='First Player'?m.g2:m.g1)||0;
-    const favName=favIs==='First Player'?m.p1:m.p2,favO=favIs==='First Player'?m.o1:m.o2;
-    const breakSim=simAlerts.find(s=>s.type==='tennis_break'&&!s.resolved&&s._eventId===m.id&&s._setNum===m.curSetNum);
-    if(!breakSim) return;
-    const rkKey=`${m.id}_s${m.curSetNum}`;
-    if(!breakRecoveries.has(rkKey)) breakRecoveries.set(rkKey,{recovered:false,alertedRecovery:false});
-    const rec=breakRecoveries.get(rkKey);
-    if(favG>0&&favG===rivG&&!rec.alertedRecovery){
-      rec.alertedRecovery=true;rec.recovered=true;
-      const krec=`rec_${m.id}_s${m.curSetNum}_${favG}`;
-      if(!alertedHas(krec)){alertedAdd(krec);
-        simAlerts.unshift({id:krec,type:'tennis_recovery',match:`${m.p1} vs ${m.p2}`,detail:`${m.trn} [${m.cat.toUpperCase()}] · Set ${m.curSetNum}: empate ${favG}-${rivG}`,alertedAt:nowISO(),resolved:true,outcome:'RECOVERY',_eventId:m.id,_setNum:m.curSetNum,_favIs:favIs,_favO:favO,_oddsband:breakSim._oddsband});
-        if(simAlerts.length>500) simAlerts.length=500;
-        sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nBreak recuperado set ${m.curSetNum}: ${m.g1}-${m.g2} · ${favName} igualó`);
-      }
-    }
-    if(favG>rivG&&rec.alertedRecovery) rec.alertedRecovery=false;
-  });
-}
-function checkFootballStart(){lastFootball.forEach(m=>{if(m.status!=='IN_PLAY')return;const ks=`fstart_${m.id}`;if(alertedHas(ks))return;alertedAdd(ks);sendTG(`${m.h} vs ${m.a} · ${m.league}\nPartido iniciado`);});}
-function checkMonitoredMatchStart(){lastTennis.filter(m=>!m.isUp&&m.mon&&m.pbpLen>0).forEach(m=>{const ks=`start_${m.id}`;if(alertedHas(ks))return;alertedAdd(ks);const favIs=(m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX)?'First Player':'Second Player';const favName=favIs==='First Player'?m.p1:m.p2,favO=favIs==='First Player'?m.o1:m.o2;sendTG(`${m.p1} vs ${m.p2} · ${m.trn}\nInicio monitorizado · fav ${favName} @${favO!=null?favO+'x':'n/d'}`);});}
-function resolveTennisSims(){
-  simAlerts.forEach(s=>{
-    if(s.resolved)return;
-    const m=lastTennis.find(x=>x.id===s._eventId);if(!m||m.isUp)return;
-    const favName=s._favIs==='First Player'?s.match.split(' vs ')[0]:(s.match.split(' vs ')[1]||'').trim();
-    if(s.type==='tennis_break'&&m.sets1.length>s._setsP1atAlert.length){
-      const idx=s._setNum-1,favWon=s._favIs==='First Player'?m.sets1[idx]>m.sets2[idx]:m.sets2[idx]>m.sets1[idx];
-      const sc1=m.sets1[idx],sc2=m.sets2[idx];
-      s._tiebreak=(sc1===7&&sc2===6)||(sc1===6&&sc2===7);s._setScore=sc1+'-'+sc2;
-      s.outcome=favWon?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();
-      sendTG(`${s.match}\nSet ${s._setNum}: ${sc1}-${sc2}${s._tiebreak?' (tiebreak)':''} · ${favName} ${favWon?'gana':'pierde'} el set`);
-    }
-    if(s.type==='tennis_set1_set2'&&m.sets1.length>=2){
-      const favWon=s._favIs==='First Player'?m.sets1[1]>m.sets2[1]:m.sets2[1]>m.sets1[1];
-      s.outcome=favWon?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();
-      sendTG(`${s.match}\nSet 2: ${m.sets1[1]}-${m.sets2[1]} · ${favName} ${favWon?'gana':'pierde'} S2`);
-    }
-    if(s.type==='tennis_set1_match'){
-      const done=m.sets1.length>=2&&(m.sets1.filter((v,i)=>v>m.sets2[i]).length===2||m.sets2.filter((v,i)=>v>m.sets1[i]).length===2);
-      if(done){const p1w=m.sets1.filter((v,i)=>v>m.sets2[i]).length,p2w=m.sets2.filter((v,i)=>v>m.sets1[i]).length;const favWon=s._favIs==='First Player'?p1w>p2w:p2w>p1w;s.outcome=favWon?'WIN':'LOSS';s.resolved=true;s.resolvedAt=nowISO();sendTG(`${s.match}\n${m.sets1.map((v,i)=>`${v}-${m.sets2[i]}`).join(' ')} · ${favName} ${favWon?'gana':'pierde'} el partido`);}
-    }
-  });
-  scheduleFbSave();
+
+// ── btGlobalStats ────────────────────────────────────────────
+function btGlobalStats() {
+  const bts = simAlerts.filter(s => s._bt && s._resolved);
+  const wins = bts.filter(s => s._win).length;
+  const losses = bts.filter(s => !s._win).length;
+  const profit = bts.reduce((acc, s) => {
+    if (!s._resolved) return acc;
+    const stake = s._stake || 50;
+    return acc + (s._win ? (s._odds || 1) * stake - stake : -stake);
+  }, 0);
+  const invested = bts.reduce((acc, s) => acc + (s._resolved ? (s._stake || 50) : 0), 0);
+  const roi = invested > 0 ? (profit / invested * 100).toFixed(1) : '0.0';
+  return { wins, losses, total: wins + losses, profit: +profit.toFixed(2), roi: +roi, invested: +invested.toFixed(2) };
 }
 
-// ═══════════════════════════════════════════════════════════
-// POLL — 30s con live, 120s sin
-// ═══════════════════════════════════════════════════════════
-async function poll(){
-  try{
-    stats.pollCount++;
-    await fetchFootballLiveOdds().catch(e=>console.warn('[ODDS-F poll]',e.message));
-    const live=await fetchTennis().catch(e=>{console.error('[TENNIS]',e.message);return[];});
-    await fetchFootball().catch(e=>console.error('[FOOTBALL]',e.message));
-    checkTennisAlerts(live||[]);
-    checkSet1Loss(live||[]);
-    checkBreakRecovery(live||[]);
+// ── sendBtResolutionTG ───────────────────────────────────────
+function sendBtResolutionTG(sim) {
+  const stats = btGlobalStats();
+  const result = sim._win ? '✅ WIN' : '❌ LOSS';
+  const pnl    = sim._win
+    ? `+${((sim._odds || 1) * (sim._stake || 50) - (sim._stake || 50)).toFixed(2)}€`
+    : `-${(sim._stake || 50).toFixed(2)}€`;
+  const lines = [
+    `${sim.match || sim._match || '?'}`,
+    `${result} · ${sim._type || sim.type || '?'} @${sim._odds || '?'}x · ${pnl}`,
+    `📊 Global: ${stats.wins}W ${stats.losses}L · ${stats.profit >= 0 ? '+' : ''}${stats.profit}€ · ROI ${stats.roi}%`
+  ];
+  tg(lines.join('\n'));
+}
+
+// ════════════════════════════════════════════════════════════
+// FETCH TENNIS
+// ════════════════════════════════════════════════════════════
+async function fetchTennis() {
+  try {
+    const d = await fetchJSON(
+      `https://apiv2.allsportsapi.com/tennis/?met=Livescore&APIkey=${API_KEY}`
+    );
+    if (d && d.success && Array.isArray(d.result)) {
+      lastTennis = d.result;
+      // Update surface cache from tournament names
+      for (const m of lastTennis) {
+        const tn = m.tournament_name || m.league_name || '';
+        const lk = m.league_key || m.tournament_key || '';
+        if (lk && !surfaceCache.has(lk)) {
+          surfaceCache.set(lk, surfaceForTournament(tn));
+        }
+      }
+    }
+  } catch(e) { console.error('[fetchTennis]', e.message); }
+}
+
+// ════════════════════════════════════════════════════════════
+// FETCH FOOTBALL
+// ════════════════════════════════════════════════════════════
+async function fetchFootball() {
+  try {
+    const d = await fetchJSON(
+      `https://apiv2.allsportsapi.com/football/?met=Livescore&APIkey=${API_KEY}`
+    );
+    if (d && d.success && Array.isArray(d.result)) {
+      lastFootball = d.result;
+      // Keep allFootballForSim in sync
+      for (const m of lastFootball) {
+        if (!allFootballForSim.find(x => x.match_id === m.match_id)) {
+          allFootballForSim.push(m);
+        } else {
+          const idx = allFootballForSim.findIndex(x => x.match_id === m.match_id);
+          allFootballForSim[idx] = m;
+        }
+      }
+    }
+  } catch(e) { console.error('[fetchFootball]', e.message); }
+}
+
+// ════════════════════════════════════════════════════════════
+// FETCH FOOTBALL NEXT 24H — NEW
+// ════════════════════════════════════════════════════════════
+async function fetchFootballNext() {
+  try {
+    const now    = new Date();
+    const plus24 = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const fmt    = d => d.toISOString().split('T')[0];
+    const from   = fmt(now);
+    const to     = fmt(plus24);
+    const d = await fetchJSON(
+      `https://apiv2.allsportsapi.com/football/?met=Fixtures&APIkey=${API_KEY}&from=${from}&to=${to}`
+    );
+    if (d && d.success && Array.isArray(d.result)) {
+      // Filter only LaLiga + Premier (league keys: 149=EPL, 302=LaLiga or similar)
+      // We keep all and let frontend filter by league
+      nextFootball = d.result.map(m => ({
+        match_id        : m.match_id,
+        match_hometeam_name  : m.match_hometeam_name,
+        match_awayteam_name  : m.match_awayteam_name,
+        league_name     : m.league_name,
+        league_id       : m.league_id,
+        match_date      : m.match_date,
+        match_time      : m.match_time,
+        match_status    : m.match_status
+      }));
+    }
+  } catch(e) { console.error('[fetchFootballNext]', e.message); }
+}
+
+// ════════════════════════════════════════════════════════════
+// POLL ODDS — NEW
+// Fetches live odds for active tennis matches from AllSports API
+// Uses per-match eventId, rate-limited with 30s TTL per match
+// ════════════════════════════════════════════════════════════
+async function pollOdds() {
+  if (!lastTennis.length) return;
+  const now    = Date.now();
+  const TTL    = 30 * 1000; // only re-fetch if older than 30s
+  const MAX_CONCURRENT = 5;
+
+  // Collect matches that need an odds refresh
+  const toFetch = lastTennis
+    .filter(m => {
+      const cached = oddsCache.get(String(m.event_key));
+      return !cached || (now - cached.updated) > TTL;
+    })
+    .slice(0, MAX_CONCURRENT);
+
+  if (!toFetch.length) return;
+
+  const results = await Promise.allSettled(
+    toFetch.map(m => fetchOddsForMatch(m))
+  );
+
+  results.forEach((res, i) => {
+    if (res.status === 'rejected') {
+      console.warn('[pollOdds] match', toFetch[i].event_key, res.reason?.message);
+    }
+  });
+}
+
+async function fetchOddsForMatch(m) {
+  const matchId = String(m.event_key);
+  try {
+    const d = await fetchJSON(
+      `https://apiv2.allsportsapi.com/tennis/?met=Odds&APIkey=${API_KEY}&eventId=${matchId}`
+    );
+    if (!d || !d.success || !Array.isArray(d.result) || !d.result.length) return;
+
+    // Parse odds from AllSports response
+    // Result is array of bet types: { bet_name, odd_home, odd_away, odd_1, odd_x, odd_2 }
+    const bets = d.result;
+    let oddMatch   = null; // match winner
+    let oddSet2    = null; // set 2 winner
+    let oddCurrent = null; // current set winner
+
+    // AllSports tennis odds bet_name examples:
+    // "Match Winner", "Set 1 Winner", "Set 2 Winner", "Set 3 Winner"
+    const nt  = normT(m);
+    const cs  = nt.setNum; // current set number (1-based)
+
+    for (const b of bets) {
+      const name = (b.bet_name || '').toLowerCase();
+      if (name.includes('match winner') && !oddMatch) {
+        // odd_home = home player, odd_away = away player
+        const oh = parseFloat(b.odd_home || b.odd_1 || 0);
+        const oa = parseFloat(b.odd_away || b.odd_2 || 0);
+        if (oh > 0 && oa > 0) {
+          oddMatch = nt.fav === 'home' ? oh : oa;
+        }
+      }
+      if (name.includes(`set ${cs} winner`) && !oddCurrent) {
+        const oh = parseFloat(b.odd_home || b.odd_1 || 0);
+        const oa = parseFloat(b.odd_away || b.odd_2 || 0);
+        if (oh > 0 && oa > 0) {
+          oddCurrent = nt.fav === 'home' ? oh : oa;
+        }
+      }
+      if (name.includes('set 2 winner') && !oddSet2) {
+        const oh = parseFloat(b.odd_home || b.odd_1 || 0);
+        const oa = parseFloat(b.odd_away || b.odd_2 || 0);
+        if (oh > 0 && oa > 0) {
+          oddSet2 = nt.fav === 'home' ? oh : oa;
+        }
+      }
+    }
+
+    // Determine favourite from match winner odds
+    const allWinner = bets.find(b => (b.bet_name||'').toLowerCase().includes('match winner'));
+    let favName = null;
+    if (allWinner) {
+      const oh = parseFloat(allWinner.odd_home || allWinner.odd_1 || 0);
+      const oa = parseFloat(allWinner.odd_away || allWinner.odd_2 || 0);
+      if (oh > 0 && oa > 0) {
+        favName = oh <= oa ? m.event_home_team : m.event_away_team;
+      }
+    }
+
+    const entry = {
+      match   : oddMatch,
+      set2    : oddSet2,
+      current : oddCurrent,
+      fav     : favName || m.event_home_team,
+      updated : Date.now()
+    };
+    oddsCache.set(matchId, entry);
+
+  } catch(e) {
+    // Keep stale entry if exists, just update timestamp to avoid hammering
+    const stale = oddsCache.get(matchId);
+    if (stale) oddsCache.set(matchId, { ...stale, updated: Date.now() });
+    throw e;
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// ALERT HELPERS — attach live odds to new sim alerts
+// ════════════════════════════════════════════════════════════
+function getOddsForMatch(matchId) {
+  const o = oddsCache.get(String(matchId));
+  if (!o) return {};
+  return {
+    odds_match   : o.match,
+    odds_set2    : o.set2,
+    odds_current : o.current
+  };
+}
+
+// ════════════════════════════════════════════════════════════
+// CHECK TENNIS ALERTS
+// ════════════════════════════════════════════════════════════
+function checkTennisAlerts() {
+  for (const m of lastTennis) {
+    const id  = `td_${m.event_key}`;
+    const nt  = normT(m);
+    const { sets1, sets2, g1, g2, fav, setNum } = nt;
+
+    if (fav === 'home') {
+      var favG = g1, rivG = g2;
+      var favSets = sets1, rivSets = sets2;
+      var favName = m.event_home_team, rivName = m.event_away_team;
+    } else {
+      var favG = g2, rivG = g1;
+      var favSets = sets2, rivSets = sets1;
+      var favName = m.event_away_team, rivName = m.event_home_team;
+    }
+
+    const tour = m.tournament_name || m.league_name || 'ATP';
+    const lk   = m.league_key || m.tournament_key || '';
+    const surf = surfaceCache.get(lk) || surfaceForTournament(tour);
+
+    // ── Break alert ─────────────────────────────────────────
+    // Favourite is broken: rival leads by exactly 1 break (rivG > favG)
+    // and rival's lead came from a break (not from their own serves)
+    const setLabel  = `s${setNum}`;
+    const brkKey    = `${id}_brk_${setLabel}`;
+    const brkState  = breakRecoveries.get(brkKey) || { broken: false, brkRivG: null, brkFavG: null };
+
+    if (!brkState.broken && rivG > favG) {
+      // Potential break — mark it
+      const simId = `brk_${id}_${setLabel}_${favG}`;
+      if (!alerted.has(simId)) {
+        alerted.add(simId);
+        // Odds from livescore odds fields
+        const mOdds = fav === 'home'
+          ? +m.event_home_team_odds || null
+          : +m.event_away_team_odds || null;
+        const useOdd = (mOdds && mOdds >= ODD_MIN && mOdds <= ODD_MAX) ? mOdds : BT_ODDS.brk;
+
+        const odds = getOddsForMatch(m.event_key);
+
+        const sim = {
+          _id        : simId,
+          _type      : 'tennis_break',
+          _bt        : true,
+          _odds      : BT_ODDS.brk,
+          _stake     : 50,
+          _resolved  : false,
+          _win       : null,
+          _simId     : simId,
+          // Live odds (from pollOdds)
+          odds_match   : odds.odds_match   || null,
+          odds_set2    : odds.odds_set2    || null,
+          odds_current : odds.odds_current || null,
+          // Metadata for BT categories — NEW
+          date       : m.event_date || new Date().toISOString().split('T')[0],
+          tournament : tour,
+          round      : m.event_round || '',
+          surface    : surf,
+          _cat       : `${surf}_${m.event_round || 'unknown'}`,
+          // Match data
+          match      : `${favName} vs ${rivName}`,
+          matchId    : id,
+          setLabel,
+          favName,
+          rivName,
+          favG, rivG,
+          ts         : Date.now()
+        };
+        simAlerts.unshift(sim);
+        if (simAlerts.length > 500) simAlerts.length = 500;
+
+        // Telegram
+        tg(`${favName} vs ${rivName} · ${tour}\nBreak ${setLabel.replace('s','set ')}: ${favG}-${rivG} · ${favName} roto @${BT_ODDS.brk}x → apostar gana set`);
+
+        // Mark break state
+        breakRecoveries.set(brkKey, { broken: true, brkRivG: rivG, brkFavG: favG });
+      }
+    }
+
+    // ── Break recovery (informative only, no popup/bt) ──────
+    if (brkState.broken && favG === rivG) {
+      const recKey = `rec_${id}_${setLabel}_${favG}`;
+      if (!alerted.has(recKey)) {
+        alerted.add(recKey);
+        breakRecoveries.set(brkKey, { broken: false, brkRivG: null, brkFavG: null });
+        tg(`${favName} vs ${rivName} · ${tour}\nBreak recuperado ${setLabel.replace('s','set ')}: ${favG}-${rivG} · ${favName} igualó`);
+
+        // Add informative simAlert (not BT)
+        const sim = {
+          _id      : recKey,
+          _type    : 'tennis_recovery',
+          _bt      : false,
+          _resolved: false,
+          match    : `${favName} vs ${rivName}`,
+          ts       : Date.now()
+        };
+        simAlerts.unshift(sim);
+        if (simAlerts.length > 500) simAlerts.length = 500;
+      }
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// CHECK SET 1 LOSS
+// ════════════════════════════════════════════════════════════
+function checkSet1Loss() {
+  for (const m of lastTennis) {
+    const id  = `td_${m.event_key}`;
+    const nt  = normT(m);
+    const { sets1, sets2, fav, setNum } = nt;
+    if (sets1.length < 1) continue;
+
+    const favSets = fav === 'home' ? sets1 : sets2;
+    const rivSets = fav === 'home' ? sets2 : sets1;
+    const favName = fav === 'home' ? m.event_home_team : m.event_away_team;
+    const rivName = fav === 'home' ? m.event_away_team : m.event_home_team;
+    const tour    = m.tournament_name || m.league_name || 'ATP';
+    const lk      = m.league_key || m.tournament_key || '';
+    const surf    = surfaceCache.get(lk) || surfaceForTournament(tour);
+
+    // Fav lost set 1?
+    if (favSets[0] < rivSets[0]) {
+      const odds = getOddsForMatch(m.event_key);
+
+      // tennis_set1_set2
+      const s2key = `set1loss_s2_${id}`;
+      if (!alerted.has(s2key)) {
+        alerted.add(s2key);
+        const mOdds = fav === 'home' ? +m.event_home_team_odds : +m.event_away_team_odds;
+        const sim = {
+          _id        : s2key,
+          _type      : 'tennis_set1_set2',
+          _bt        : true,
+          _odds      : BT_ODDS.s2,
+          _stake     : 50,
+          _resolved  : false,
+          _win       : null,
+          _simId     : s2key,
+          odds_match   : odds.odds_match   || null,
+          odds_set2    : odds.odds_set2    || null,
+          odds_current : odds.odds_current || null,
+          date       : m.event_date || new Date().toISOString().split('T')[0],
+          tournament : tour,
+          round      : m.event_round || '',
+          surface    : surf,
+          _cat       : `${surf}_${m.event_round || 'unknown'}`,
+          match      : `${favName} vs ${rivName}`,
+          matchId    : id,
+          favName, rivName,
+          s1fav: favSets[0], s1riv: rivSets[0],
+          ts    : Date.now()
+        };
+        simAlerts.unshift(sim);
+        if (simAlerts.length > 500) simAlerts.length = 500;
+        tg(`${favName} vs ${rivName} · ${tour}\nSet 1: ${favSets[0]}-${rivSets[0]} · Fav pierde S1 @${BT_ODDS.s2}x\nApostar: gana S2 / gana partido`);
+      }
+
+      // tennis_set1_match
+      const smkey = `set1loss_match_${id}`;
+      if (!alerted.has(smkey)) {
+        alerted.add(smkey);
+        const sim = {
+          _id        : smkey,
+          _type      : 'tennis_set1_match',
+          _bt        : true,
+          _odds      : BT_ODDS.sm,
+          _stake     : 50,
+          _resolved  : false,
+          _win       : null,
+          _simId     : smkey,
+          odds_match   : odds.odds_match   || null,
+          odds_set2    : odds.odds_set2    || null,
+          odds_current : odds.odds_current || null,
+          date       : m.event_date || new Date().toISOString().split('T')[0],
+          tournament : tour,
+          round      : m.event_round || '',
+          surface    : surf,
+          _cat       : `${surf}_${m.event_round || 'unknown'}`,
+          match      : `${favName} vs ${rivName}`,
+          matchId    : id,
+          favName, rivName,
+          s1fav: favSets[0], s1riv: rivSets[0],
+          ts    : Date.now()
+        };
+        simAlerts.unshift(sim);
+        if (simAlerts.length > 500) simAlerts.length = 500;
+      }
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// CHECK BREAK RECOVERY (alias for the map cleanup)
+// ════════════════════════════════════════════════════════════
+function checkBreakRecovery() {
+  // Resolution logic is already in checkTennisAlerts()
+  // This function cleans up stale break states for matches no longer live
+  const liveIds = new Set(lastTennis.map(m => `td_${m.event_key}`));
+  for (const [key] of breakRecoveries) {
+    // key format: td_EVENTKEY_brk_sN
+    const matchId = key.split('_brk_')[0];
+    if (!liveIds.has(matchId)) {
+      breakRecoveries.delete(key);
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// CHECK MONITORED MATCH START (tennis upcoming → live)
+// ════════════════════════════════════════════════════════════
+function checkMonitoredMatchStart() {
+  // Placeholder — matches that were upcoming and are now live get alerts
+  // This runs to ensure alerted set is consistent
+}
+
+// ════════════════════════════════════════════════════════════
+// CHECK FOOTBALL START
+// ════════════════════════════════════════════════════════════
+function checkFootballStart() {
+  for (const m of lastFootball) {
+    const startKey = `start_${m.match_id}`;
+    if (!alerted.has(startKey) && m.match_status === 'First Half') {
+      alerted.add(startKey);
+      // Record kickoff snapshot
+      kickoffSnapshot.set(m.match_id, {
+        home: +m.match_hometeam_score || 0,
+        away: +m.match_awayteam_score || 0
+      });
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// CHECK FOOTBALL ALERTS
+// ════════════════════════════════════════════════════════════
+function checkFootballAlerts() {
+  for (const m of lastFootball) {
+    const mid  = m.match_id;
+    const min  = parseInt(m.match_elapsed || m.match_status_detail || 0) || 0;
+    const h    = +m.match_hometeam_score || 0;
+    const a    = +m.match_awayteam_score || 0;
+    const stat = m.match_status || '';
+
+    // 1st half window: min 22-38, 0-0 global
+    if (stat === 'First Half' && min >= 22 && min <= 38 && h === 0 && a === 0) {
+      const k25 = `k25_${mid}`;
+      if (!alerted.has(k25)) {
+        alerted.add(k25);
+        const tour = m.league_name || 'Liga';
+        const match = `${m.match_hometeam_name} vs ${m.match_awayteam_name}`;
+
+        // Football sim 0.5
+        const sim05 = {
+          _id       : `${k25}_05`,
+          _type     : 'football_ht_05',
+          _bt       : true,
+          _odds     : BT_ODDS.ft05,
+          _stake    : 50,
+          _resolved : false,
+          _win      : null,
+          _simId    : `${k25}_05`,
+          match, matchId: String(mid),
+          league: tour, min,
+          date  : m.match_date || new Date().toISOString().split('T')[0],
+          ts    : Date.now()
+        };
+        const sim15 = {
+          _id       : `${k25}_15`,
+          _type     : 'football_ht_15',
+          _bt       : true,
+          _odds     : BT_ODDS.ft15,
+          _stake    : 25,
+          _resolved : false,
+          _win      : null,
+          _simId    : `${k25}_15`,
+          match, matchId: String(mid),
+          league: tour, min,
+          date  : m.match_date || new Date().toISOString().split('T')[0],
+          ts    : Date.now()
+        };
+        simAlerts.unshift(sim05, sim15);
+        if (simAlerts.length > 500) simAlerts.length = 500;
+
+        // Save HT snapshot for 2H resolution
+        htSnapshot.set(mid, { home: h, away: a });
+
+        tg(`${match} · ${tour}\nMin.${min} · 0-0 1ªP · apostar +0.5 (50€) y +1.5 (25€)`);
+      }
+    }
+
+    // 2nd half window: min 63-78, 0 goals in 2nd half
+    if (stat === 'Second Half' && min >= 63 && min <= 78) {
+      const ht = htSnapshot.get(mid) || { home: 0, away: 0 };
+      const goals2h = (h - ht.home) + (a - ht.away);
+      if (goals2h === 0) {
+        const k67 = `k67_${mid}`;
+        if (!alerted.has(k67)) {
+          alerted.add(k67);
+          const tour  = m.league_name || 'Liga';
+          const match = `${m.match_hometeam_name} vs ${m.match_awayteam_name}`;
+
+          const sim05 = {
+            _id       : `${k67}_05`,
+            _type     : 'football_2h_05',
+            _bt       : true,
+            _odds     : BT_ODDS.ft05,
+            _stake    : 50,
+            _resolved : false,
+            _win      : null,
+            _simId    : `${k67}_05`,
+            match, matchId: String(mid),
+            league: tour, min,
+            date  : m.match_date || new Date().toISOString().split('T')[0],
+            ts    : Date.now()
+          };
+          const sim15 = {
+            _id       : `${k67}_15`,
+            _type     : 'football_2h_15',
+            _bt       : true,
+            _odds     : BT_ODDS.ft15,
+            _stake    : 25,
+            _resolved : false,
+            _win      : null,
+            _simId    : `${k67}_15`,
+            match, matchId: String(mid),
+            league: tour, min,
+            date  : m.match_date || new Date().toISOString().split('T')[0],
+            ts    : Date.now()
+          };
+          simAlerts.unshift(sim05, sim15);
+          if (simAlerts.length > 500) simAlerts.length = 500;
+
+          tg(`${match} · ${tour}\nMin.${min} · 0 goles 2ªP · apostar +0.5 (50€) y +1.5 (25€)`);
+        }
+      }
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// RESOLVE TENNIS SIMS
+// ════════════════════════════════════════════════════════════
+function resolveTennisSims() {
+  const liveMap = new Map(lastTennis.map(m => [`td_${m.event_key}`, m]));
+
+  for (const sim of simAlerts) {
+    if (!sim._bt || sim._resolved) continue;
+    const m = liveMap.get(sim.matchId);
+
+    if (sim._type === 'tennis_break') {
+      if (!m) {
+        // Match ended — if it's gone from live, we can't resolve automatically without final score
+        // Leave unresolved until manual resolution or future enhancement
+        continue;
+      }
+      const nt  = normT(m);
+      const { sets1, sets2, fav } = nt;
+      const setIdx = parseInt((sim.setLabel || 's1').replace('s','')) - 1;
+      const favSets = fav === 'home' ? sets1 : sets2;
+      const rivSets = fav === 'home' ? sets2 : sets1;
+
+      if (favSets.length > setIdx && rivSets.length > setIdx) {
+        // Set is complete
+        const fWon = favSets[setIdx] > rivSets[setIdx];
+        sim._resolved = true;
+        sim._win      = fWon;
+        sim._resolvedAt = Date.now();
+
+        // Check tiebreak
+        if (favSets[setIdx] === 7 && rivSets[setIdx] === 6) sim._tiebreak = true;
+        if (favSets[setIdx] === 6 && rivSets[setIdx] === 7) sim._tiebreak = true;
+
+        sendBtResolutionTG(sim);
+        fbPut(`/state/sims/${sim._id.replace(/[^a-z0-9_]/gi,'_')}`, sim).catch(()=>{});
+      }
+    }
+
+    if (sim._type === 'tennis_set1_set2') {
+      if (!m) continue;
+      const nt  = normT(m);
+      const { sets1, sets2, fav } = nt;
+      const favSets = fav === 'home' ? sets1 : sets2;
+      const rivSets = fav === 'home' ? sets2 : sets1;
+      if (favSets.length >= 2 && rivSets.length >= 2) {
+        sim._resolved   = true;
+        sim._win        = favSets[1] > rivSets[1];
+        sim._resolvedAt = Date.now();
+        sendBtResolutionTG(sim);
+        fbPut(`/state/sims/${sim._id.replace(/[^a-z0-9_]/gi,'_')}`, sim).catch(()=>{});
+      }
+    }
+
+    if (sim._type === 'tennis_set1_match') {
+      if (!m) {
+        // Match gone from live — check if we can determine winner
+        continue;
+      }
+      // Resolve when match is over: one player has 2 sets
+      const nt  = normT(m);
+      const { sets1, sets2, fav } = nt;
+      const favSets = fav === 'home' ? sets1 : sets2;
+      const rivSets = fav === 'home' ? sets2 : sets1;
+      const favSetWins = favSets.reduce((acc, v, i) => acc + (v > (rivSets[i]||0) ? 1 : 0), 0);
+      const rivSetWins = rivSets.reduce((acc, v, i) => acc + (v > (favSets[i]||0) ? 1 : 0), 0);
+      if (favSetWins === 2 || rivSetWins === 2) {
+        sim._resolved   = true;
+        sim._win        = favSetWins === 2;
+        sim._resolvedAt = Date.now();
+        sendBtResolutionTG(sim);
+        fbPut(`/state/sims/${sim._id.replace(/[^a-z0-9_]/gi,'_')}`, sim).catch(()=>{});
+      }
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// RESOLVE FOOTBALL SIMS
+// ════════════════════════════════════════════════════════════
+function resolveFootballSims() {
+  const liveMap = new Map(lastFootball.map(m => [String(m.match_id), m]));
+
+  for (const sim of simAlerts) {
+    if (!sim._bt || sim._resolved) continue;
+    if (!sim._type.startsWith('football_')) continue;
+
+    const m = liveMap.get(sim.matchId);
+
+    // HT sims resolve at PAUSED (half time)
+    if (sim._type === 'football_ht_05' || sim._type === 'football_ht_15') {
+      if (!m) continue;
+      const stat = m.match_status || '';
+      if (stat === 'Half Time' || stat === 'HT' || stat === 'PAUSED') {
+        const h = +m.match_hometeam_score || 0;
+        const a = +m.match_awayteam_score || 0;
+        const goals = h + a;
+        sim._resolved   = true;
+        sim._win        = sim._type.includes('05') ? goals > 0 : goals > 1;
+        sim._resolvedAt = Date.now();
+        sendBtResolutionTG(sim);
+        fbPut(`/state/sims/${sim._id.replace(/[^a-z0-9_]/gi,'_')}`, sim).catch(()=>{});
+      }
+    }
+
+    // 2H sims resolve at FINISHED
+    if (sim._type === 'football_2h_05' || sim._type === 'football_2h_15') {
+      if (!m) continue;
+      const stat = m.match_status || '';
+      if (stat === 'Finished' || stat === 'FT' || stat === 'FINISHED') {
+        const h  = +m.match_hometeam_score || 0;
+        const a  = +m.match_awayteam_score || 0;
+        const ht = htSnapshot.get(m.match_id) || { home: 0, away: 0 };
+        const goals2h = (h - ht.home) + (a - ht.away);
+        sim._resolved   = true;
+        sim._win        = sim._type.includes('05') ? goals2h > 0 : goals2h > 1;
+        sim._resolvedAt = Date.now();
+        sendBtResolutionTG(sim);
+        fbPut(`/state/sims/${sim._id.replace(/[^a-z0-9_]/gi,'_')}`, sim).catch(()=>{});
+      }
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// MAIN POLL LOOP
+// Order: fetchTennis → fetchFootball → checkTennisAlerts →
+//        checkSet1Loss → checkBreakRecovery →
+//        checkMonitoredMatchStart → checkFootballStart →
+//        checkFootballAlerts → resolveTennisSims → resolveFootballSims
+// ════════════════════════════════════════════════════════════
+let pollTimer = null;
+
+async function poll() {
+  try {
+    await fetchTennis();
+    await fetchFootball();
+    checkTennisAlerts();
+    checkSet1Loss();
+    checkBreakRecovery();
     checkMonitoredMatchStart();
-    checkFootballAlerts();
     checkFootballStart();
+    checkFootballAlerts();
     resolveTennisSims();
     resolveFootballSims();
-    lastUpdate=nowISO();
-    if(stats.pollCount%20===0){cleanupAlerted();console.log(`[POLL #${stats.pollCount}] Tennis:${lastTennis.filter(m=>!m.isUp).length} Football:${lastFootball.filter(m=>m.status==='IN_PLAY').length} Odds:${oddsCache.size} Alerted:${alerted.size} OddsUpd:${stats.oddsUpdates}`);}
-  }catch(e){stats.errors++;console.error('[POLL ERROR]',e.message);}
-  setTimeout(poll, hasLiveMatches()?30000:120000);
+  } catch(e) {
+    console.error('[poll]', e.message);
+  }
+
+  const hasLive = lastTennis.length > 0 || lastFootball.length > 0;
+  const delay   = hasLive ? 45000 : 180000;
+  pollTimer = setTimeout(poll, delay);
 }
 
-// ═══════════════════════════════════════════════════════════
+// Odds poll — independent 15s cycle
+function startOddsPoll() {
+  const oddsPollFn = async () => {
+    try { await pollOdds(); } catch(e) { console.error('[oddsPoll]', e.message); }
+    setTimeout(oddsPollFn, 15000);
+  };
+  setTimeout(oddsPollFn, 5000); // start 5s after boot
+}
+
+// Football next 24h — refresh every 10 minutes
+function startFootballNextPoll() {
+  const fn = async () => {
+    try { await fetchFootballNext(); } catch(e) { console.error('[footballNext]', e.message); }
+    setTimeout(fn, 10 * 60 * 1000);
+  };
+  fn(); // immediate
+}
+
+// ════════════════════════════════════════════════════════════
+// 8-HOUR CHECK
+// ════════════════════════════════════════════════════════════
+function eightHourCheck() {
+  const since = Date.now() - 8 * 60 * 60 * 1000;
+  const recent = simAlerts.filter(s => s._bt && s._resolved && s._resolvedAt > since);
+  if (!recent.length) return;
+  const stats = btGlobalStats();
+  const lines = ['📋 Resumen 8h:', ...recent.map(s =>
+    `${s._win?'✅':'❌'} ${s.match} · ${s._type}`
+  ), `Total: ${stats.wins}W ${stats.losses}L · ${stats.profit}€`];
+  tg(lines.join('\n'));
+}
+
+// ════════════════════════════════════════════════════════════
+// DAILY ALERT
+// ════════════════════════════════════════════════════════════
+function sendDailyBtSummary() {
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const stats  = btGlobalStats();
+  const recent = simAlerts.filter(s => s._bt && s._resolved && s._resolvedAt > since);
+  const lines  = [
+    `📅 Resumen diario`,
+    `${recent.length} resoluciones · ${stats.wins}W ${stats.losses}L`,
+    `Profit: ${stats.profit >= 0 ? '+' : ''}${stats.profit}€ · ROI ${stats.roi}%`
+  ];
+  tg(lines.join('\n'));
+}
+
+function scheduleDailyAlert() {
+  const now    = new Date();
+  const target = new Date(now);
+  target.setHours(15, 0, 0, 0);
+  if (target <= now) target.setDate(target.getDate() + 1);
+  setTimeout(() => {
+    sendDailyBtSummary();
+    setInterval(sendDailyBtSummary, 24 * 60 * 60 * 1000);
+  }, target - now);
+}
+
+// ════════════════════════════════════════════════════════════
 // HTTP SERVER
-// ═══════════════════════════════════════════════════════════
-const CORS_HEADERS={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type,Authorization'};
-
-async function ghUpsertFile(repoPath,contentStr,commitMsg){
-  const GH_TOKEN=process.env.GH_TOKEN||'',GH_REPO=process.env.GH_REPO||'Roturas25/Roturas25prod';
-  if(!GH_TOKEN) throw new Error('GH_TOKEN not set');
-  const b64=Buffer.from(contentStr).toString('base64');
-  let sha;try{const ex=await fetchJson(`https://api.github.com/repos/${GH_REPO}/contents/${repoPath}`,{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json','User-Agent':'Roturas25'});sha=ex?.sha;}catch(_){}
-  const body=JSON.stringify({message:commitMsg,content:b64,...(sha?{sha}:{})});
-  await new Promise((res,rej)=>{const buf=Buffer.from(body);const r=https.request({hostname:'api.github.com',path:`/repos/${GH_REPO}/contents/${repoPath}`,method:'PUT',headers:{Authorization:`token ${GH_TOKEN}`,Accept:'application/vnd.github.v3+json','Content-Type':'application/json','Content-Length':buf.length,'User-Agent':'Roturas25-Server'}},r=>{r.resume();r.on('end',res);});r.on('error',rej);r.write(buf);r.end();});
+// ════════════════════════════════════════════════════════════
+function cors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-const server=http.createServer((req,res)=>{
-  Object.entries(CORS_HEADERS).forEach(([k,v])=>res.setHeader(k,v));
-  res.setHeader('Content-Type','application/json');
-  if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
-  const path=new URL(req.url,'http://localhost').pathname;
+function json(res, data, status = 200) {
+  cors(res);
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(data));
+}
 
-  if(path==='/health'&&req.method==='GET'){
-    res.writeHead(200);
-    res.end(JSON.stringify({ok:true,version:'v7',football:!!FOOTBALL_KEY,tennis:!!TENNIS_KEY,liveOdds:!!THEODDS_KEY,telegram:!!TG_TOKEN,oddMin:ODD_MIN,oddMax:ODD_MAX,updated:lastUpdate,stats,liveFootball:lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED').length,liveTennis:lastTennis.filter(m=>!m.isUp).length,oddsCache:oddsCache.size,simCount:simAlerts.length,pollInterval:hasLiveMatches()?'30s':'120s'}));
-    return;
-  }
+function readBody(req) {
+  return new Promise(resolve => {
+    let buf = '';
+    req.on('data', d => buf += d);
+    req.on('end', () => { try { resolve(JSON.parse(buf)); } catch { resolve({}); } });
+  });
+}
 
-  if(path==='/data'&&req.method==='GET'){
-    const ftStats={ht_05:{alerts:0,wins:0,losses:0},ht_15:{alerts:0,wins:0,losses:0},'2h_05':{alerts:0,wins:0,losses:0},'2h_15':{alerts:0,wins:0,losses:0}};
-    const oddStats={},catStats={};
-    ['1.20-1.30','1.30-1.40','1.40-1.50','1.50-1.60'].forEach(b=>{oddStats[b]={alerts:0,wins:0,losses:0,recoveries:0};});
-    simAlerts.forEach(s=>{
-      if(s.resolved){const k=s.type==='football_ht_05'?'ht_05':s.type==='football_ht_15'?'ht_15':s.type==='football_2h_05'?'2h_05':s.type==='football_2h_15'?'2h_15':null;if(k){ftStats[k].alerts++;if(s.outcome==='WIN')ftStats[k].wins++;if(s.outcome==='LOSS')ftStats[k].losses++;}}
-      if(['tennis_break','tennis_set1_set2','tennis_set1_match'].includes(s.type)&&s.resolved&&s._oddsband){const b=s._oddsband;if(!oddStats[b])oddStats[b]={alerts:0,wins:0,losses:0,recoveries:0};oddStats[b].alerts++;if(s.outcome==='WIN')oddStats[b].wins++;if(s.outcome==='LOSS')oddStats[b].losses++;}
-      if(s.type==='tennis_recovery'&&s._oddsband){if(!oddStats[s._oddsband])oddStats[s._oddsband]={alerts:0,wins:0,losses:0,recoveries:0};oddStats[s._oddsband].recoveries++;}
-      const cat=s._cat;
-      if(cat&&['tennis_break','tennis_set1_set2','tennis_set1_match'].includes(s.type)&&s.resolved){if(!catStats[cat])catStats[cat]={alerts:0,wins:0,losses:0,recoveries:0};catStats[cat].alerts++;if(s.outcome==='WIN')catStats[cat].wins++;if(s.outcome==='LOSS')catStats[cat].losses++;}
-      if(cat&&s.type==='tennis_recovery'){if(!catStats[cat])catStats[cat]={alerts:0,wins:0,losses:0,recoveries:0};catStats[cat].recoveries++;}
+const server = http.createServer(async (req, res) => {
+  const url = req.url.split('?')[0];
+
+  if (req.method === 'OPTIONS') { cors(res); res.writeHead(204); res.end(); return; }
+
+  // ── GET /health ──────────────────────────────────────────
+  if (req.method === 'GET' && url === '/health') {
+    return json(res, {
+      ok      : true,
+      uptime  : process.uptime(),
+      tennis  : lastTennis.length,
+      football: lastFootball.length,
+      sims    : simAlerts.length,
+      alerted : alerted.size,
+      odds    : oddsCache.size,
+      ts      : Date.now()
     });
-    res.writeHead(200);
-    res.end(JSON.stringify({football:lastFootball,tennis:lastTennis,updated:lastUpdate,alerted:[...alerted.keys()],simAlerts:simAlerts.slice(0,200),oddStats,catStats,ftStats,liveOddsActive:!!THEODDS_KEY}));
-    return;
   }
 
-  if(path==='/reset'&&req.method==='POST'){
-    let body='';
-    req.on('data',d=>{body+=d;if(body.length>1024)req.destroy();});
-    req.on('end',async()=>{
-      try{
-        const{secret}=JSON.parse(body||'{}');
-        if(secret!==(process.env.DEPLOY_SECRET||'roturas25deploy')){res.writeHead(403);res.end(JSON.stringify({error:'Forbidden'}));return;}
-        await Promise.all([fbDelete('/btdata'),fbDelete('/btcleared'),fbDelete('/bets'),fbDelete('/state/sims')]);
-        simAlerts.length=0;
-        console.log('[RESET] Firebase limpiado');
-        res.writeHead(200);res.end(JSON.stringify({ok:true,cleared:['btdata','bets','state/sims','btcleared'],ts:nowISO()}));
-      }catch(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));}
+  // ── GET /data ────────────────────────────────────────────
+  if (req.method === 'GET' && url === '/data') {
+    return json(res, {
+      tennis       : lastTennis,
+      football     : lastFootball,
+      simAlerts    : simAlerts.slice(0, 200), // send last 200
+      btStats      : btGlobalStats(),
+      odds         : Object.fromEntries(oddsCache),  // NEW
+      ts           : Date.now()
     });
-    return;
   }
 
-  if(path==='/admin/push'&&req.method==='POST'){
-    let body='';
-    req.on('data',d=>{body+=d;if(body.length>5*1024*1024)req.destroy();});
-    req.on('end',async()=>{
-      try{
-        const{secret,file,content:fileContent}=JSON.parse(body);
-        if(secret!==(process.env.DEPLOY_SECRET||'roturas25deploy')){res.writeHead(403);res.end(JSON.stringify({error:'Forbidden'}));return;}
-        if(!file||!fileContent){res.writeHead(400);res.end(JSON.stringify({error:'file and content required'}));return;}
-        if(!['server.js','docs/index.html','package.json'].includes(file)){res.writeHead(400);res.end(JSON.stringify({error:'file not allowed'}));return;}
-        await ghUpsertFile(file,fileContent,`Deploy ${file} ${nowISO()}`);
-        res.writeHead(200);res.end(JSON.stringify({ok:true,file,pushed:true}));
-        console.log('[DEPLOY] pushed',file);
-      }catch(e){console.error('[DEPLOY ERROR]',e.message);res.writeHead(500);res.end(JSON.stringify({error:e.message}));}
-    });
-    return;
+  // ── GET /football-next ───────────────────────────────────
+  if (req.method === 'GET' && url === '/football-next') {
+    return json(res, { ok: true, matches: nextFootball, ts: Date.now() });
   }
 
-  res.writeHead(404);res.end(JSON.stringify({error:'Not found'}));
+  // ── POST /admin/push ─────────────────────────────────────
+  if (req.method === 'POST' && url === '/admin/push') {
+    const body = await readBody(req);
+    if (body && body.message) tg(body.message);
+    return json(res, { ok: true });
+  }
+
+  // ── POST /reset ──────────────────────────────────────────
+  // NEW: clears all state
+  if (req.method === 'POST' && url === '/reset') {
+    alerted.clear();
+    simAlerts.length = 0;
+    oddsCache.clear();
+    breakRecoveries.clear();
+    htSnapshot.clear();
+    kickoffSnapshot.clear();
+    try {
+      await fbPut('/state/alerted', []);
+      await fbPut('/state/sims', []);
+    } catch(e) { console.warn('[reset] FB error:', e.message); }
+    console.log('[reset] Database reset at', new Date().toISOString());
+    return json(res, { ok: true, ts: Date.now() });
+  }
+
+  // ── 404 ──────────────────────────────────────────────────
+  return json(res, { error: 'not found' }, 404);
 });
 
-server.listen(PORT,async()=>{
-  console.log(`\n🎾 ROTURAS25 v7 — puerto ${PORT}`);
-  console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
-  console.log(`   LiveOdds(TheOddsAPI):${THEODDS_KEY?'✓ ACTIVO':'✗ no configurado — solo pre-match AllSports'}`);
-  console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}  Poll: 30s live / 120s idle\n`);
-  await loadSurfaceCache();
-  await loadStateFromFB();
+// ════════════════════════════════════════════════════════════
+// STARTUP
+// ════════════════════════════════════════════════════════════
+server.listen(PORT, () => {
+  console.log(`[Roturas25 v10] listening on :${PORT}`);
+
+  // Boot notification (8s delay)
+  setTimeout(() => {
+    const stats = btGlobalStats();
+    tg(`🟢 Roturas25 v10 iniciado\nSims: ${simAlerts.length} · ${stats.wins}W ${stats.losses}L · ${stats.profit}€`);
+  }, 8000);
+
+  // Start polling loops
   poll();
+  startOddsPoll();
+  startFootballNextPoll();
+
+  // Periodic checks
+  setInterval(eightHourCheck, 8 * 60 * 60 * 1000);
+  scheduleDailyAlert();
 });
