@@ -171,13 +171,13 @@ tr:hover td{background:var(--bg3)}
 
 <div id="nav">
   <div class="logo">R25</div>
-  <button class="tab-btn active" onclick="showTab('live')">🔴 Live</button>
-  <button class="tab-btn" onclick="showTab('tennis')">🎾 Tenis</button>
-  <button class="tab-btn" onclick="showTab('football')">⚽ Fútbol</button>
-  <button class="tab-btn" onclick="showTab('next24')">📅 24h</button>
-  <button class="tab-btn" onclick="showTab('sim')">📊 Sim</button>
-  <button class="tab-btn" onclick="showTab('bt')">🔬 BT</button>
-  <button class="tab-btn" onclick="showTab('cfg')">⚙️ Config</button>
+  <button class="tab-btn active" onclick="showTab('live',this)">🔴 Live</button>
+  <button class="tab-btn" onclick="showTab('tennis',this)">🎾 Tenis</button>
+  <button class="tab-btn" onclick="showTab('football',this)">⚽ Fútbol</button>
+  <button class="tab-btn" onclick="showTab('next24',this)">📅 24h</button>
+  <button class="tab-btn" onclick="showTab('sim',this)">📊 Sim</button>
+  <button class="tab-btn" onclick="showTab('bt',this)">🔬 BT</button>
+  <button class="tab-btn" onclick="showTab('cfg',this)">⚙️ Config</button>
   <div class="spacer"></div>
   <div id="status-dot"></div>
   <span id="status-txt">–</span>
@@ -351,12 +351,14 @@ const BT_TYPES_FB     = ['football_ht_05','football_ht_15','football_2h_05','foo
 // ════════════════════════════════════════════════════
 // TABS
 // ════════════════════════════════════════════════════
-function showTab(id) {
+function showTab(id, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + id).classList.add('active');
-  event.currentTarget.classList.add('active');
-  render(lastData);
+  const tabEl = document.getElementById('tab-' + id);
+  if (tabEl) tabEl.classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (lastData) render(lastData);
+  if (id === 'next24') fetchNext24();
 }
 
 // ════════════════════════════════════════════════════
@@ -424,6 +426,7 @@ async function fbSync() {
 async function fetchData() {
   try {
     const r = await fetch(SERVER + '/data');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     lastData = d;
     setStatus(true, d.ts);
@@ -431,6 +434,7 @@ async function fetchData() {
     render(d);
   } catch(e) {
     setStatus(false);
+    showOfflineState();
   }
 }
 
@@ -460,8 +464,9 @@ function schedulePoll() {
 function setStatus(ok, ts) {
   const dot = document.getElementById('status-dot');
   const txt = document.getElementById('status-txt');
-  dot.className = 'status-dot ' + (ok ? 'ok' : 'err');
-  txt.textContent = ok ? new Date(ts).toLocaleTimeString('es') : 'ERR';
+  dot.classList.remove('ok','err');
+  dot.classList.add(ok ? 'ok' : 'err');
+  txt.textContent = ok ? new Date(ts).toLocaleTimeString('es') : 'SIN SERVIDOR';
 }
 
 // ════════════════════════════════════════════════════
@@ -545,8 +550,16 @@ function migrateBTOdds() {
 }
 
 // ════════════════════════════════════════════════════
-// RENDER — MASTER
+// OFFLINE STATE — shows message when server unreachable
 // ════════════════════════════════════════════════════
+function showOfflineState() {
+  const msg = '<div class="empty">⚠️ Sin conexión con el servidor · Reintentando...</div>';
+  const ids = ['live-alerts','live-matches','tennis-live','football-live','next24-list'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el && !el.innerHTML) el.innerHTML = msg;
+  }
+}
 function render(d) {
   if (!d) return;
   renderLive(d);
@@ -959,19 +972,23 @@ function simTypeShort(t) {
   migrateBTOdds();
 
   // Set config fields
-  document.getElementById('cfg-server').value   = SERVER;
-  document.getElementById('cfg-interval').value = POLL_INT;
-  document.getElementById('cfg-fb').value       = FB_URL;
+  document.getElementById('cfg-server').value    = SERVER;
+  document.getElementById('cfg-interval').value  = POLL_INT;
+  document.getElementById('cfg-fb').value        = FB_URL;
   document.getElementById('cfg-stake-brk').value = STAKES.brk;
   document.getElementById('cfg-stake-s2').value  = STAKES.s2;
   document.getElementById('cfg-stake-sm').value  = STAKES.sm;
 
-  // Initial fetch
+  // Show loading state immediately
+  const loadingMsg = '<div class="empty">Conectando con el servidor...</div>';
+  ['live-alerts','live-matches','tennis-live','football-live'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = loadingMsg;
+  });
+
+  // Initial fetch + poll
   fetchData();
   schedulePoll();
-
-  // Fetch next 24h on next24 tab open
-  document.querySelector('[onclick="showTab(\'next24\')"]').addEventListener('click', fetchNext24);
 })();
 </script>
 </body>
