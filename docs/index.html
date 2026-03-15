@@ -1191,16 +1191,26 @@ function tCardHtml(m){
     const liveSet2    = m.odds_set2    || null;
     const liveCurrent = m.odds_current || null;
     const src         = m.odds_source  || null;
-    const srcLabel    = src==='betfair'?'BF':src==='oddsapiio'?'OAI':src?'AS':null;
-    const srcColor    = src==='betfair'?'rgba(255,184,0,.2)':src==='oddsapiio'?'rgba(94,200,248,.15)':'rgba(0,255,136,.1)';
+    const srcLabel    = src==='betfair'?'BF':src==='oddsapiio'?'OAI':src==='theodds'?'TO':src?'AS':null;
+    const srcColor    = src==='betfair'?'rgba(255,184,0,.2)':src==='theodds'?'rgba(94,200,248,.15)':src==='oddsapiio'?'rgba(160,200,255,.15)':'rgba(120,120,120,.15)';
     const srcBadge    = srcLabel?'<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 5px;border-radius:3px;margin-left:4px;background:'+srcColor+'">'+srcLabel+'</span>':'';
+    // Pre-match odds from o1/o2
+    const preO1 = m.o1 != null ? m.o1 : null;
+    const preO2 = m.o2 != null ? m.o2 : null;
+    const preHtml = (preO1||preO2) ? '<div style="margin-top:6px;padding:8px 10px;background:var(--bg4);border-radius:4px;border:1px solid var(--bd2)">'
+      +'<div style="font-family:IBM Plex Mono,monospace;font-size:8px;color:var(--wht4);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Pre-partido <span style="font-size:8px;padding:1px 4px;background:rgba(120,120,120,.15);border-radius:3px;margin-left:3px">AS</span></div>'
+      +'<div style="display:flex;gap:14px">'
+      +(preO1?'<span style="font-family:IBM Plex Mono,monospace;font-size:11px">'+(m.p1||'P1')+': <strong>'+preO1+'x</strong></span>':'')
+      +(preO2?'<span style="font-family:IBM Plex Mono,monospace;font-size:11px">'+(m.p2||'P2')+': <strong>'+preO2+'x</strong></span>':'')
+      +'</div></div>' : '';
     const liveOddsHtml = (liveMatch||liveSet2||liveCurrent)
-      ? '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--blu);margin-top:4px;line-height:1.8">'
-        + (liveMatch   ? 'Match: <strong style="color:var(--grn)">@'+liveMatch+'x</strong>'+srcBadge+'&nbsp;' : '')
-        + (liveCurrent ? 'Set'+m.curSetNum+': <strong style="color:var(--grn)">@'+liveCurrent+'x</strong>&nbsp;' : '')
-        + (liveSet2    ? 'Set2: <strong style="color:var(--grn)">@'+liveSet2+'x</strong>' : '')
+      ? '<div style="margin-top:6px;padding:8px 10px;background:rgba(0,255,136,.06);border-radius:4px;border:1px solid rgba(0,255,136,.2)">'
+        +'<div style="font-family:IBM Plex Mono,monospace;font-size:8px;color:var(--grn);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Live'+srcBadge+'</div>'
+        +(liveMatch   ? '<div style="font-family:IBM Plex Mono,monospace;font-size:11px;margin-bottom:2px">Match: <strong style="color:var(--grn);font-size:13px">@'+liveMatch+'x</strong></div>' : '')
+        +(liveCurrent ? '<div style="font-family:IBM Plex Mono,monospace;font-size:11px;margin-bottom:2px">Set'+m.curSetNum+': <strong style="color:var(--grn)">@'+liveCurrent+'x</strong></div>' : '')
+        +(liveSet2    ? '<div style="font-family:IBM Plex Mono,monospace;font-size:11px">Set2: <strong style="color:var(--grn)">@'+liveSet2+'x</strong></div>' : '')
         +'</div>'
-      : '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--wht4);margin-top:3px">Cuotas live: esperando Betfair...</div>';
+      : '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--wht4);margin-top:3px">Cuotas live: esperando TheOdds...</div>';
     aHtml='<div class="tc-alert"><div class="tc-alert-title">🟢 ROTO — '+fN.toUpperCase()+' VA PERDIENDO</div><div class="tc-alert-sc">'+m.p1+' <strong>'+m.lastBreak.gP1+'–'+m.lastBreak.gP2+'</strong> '+m.p2+' · Set '+m.curSetNum+'</div><div class="tc-alert-odds">Favorito: <strong>'+fN+'</strong> @<strong>'+fO+'x</strong> pre-match<br><span style="font-size:9px;opacity:.7">Alerta ya enviada a Telegram</span></div>'+liveOddsHtml+'<button class="logbtn g" onclick="openBetFromCard(\''+m.id+'\')">📝 Registrar apuesta</button></div>';
   }
   return '<div class="card '+(iA?'alert':m.mon?'mon':'live')+'"><div class="tc-in"><div class="tc-top"><div><div class="tc-trn">'+m.trn+'</div><div class="tc-cat '+m.cat+'">'+cl+'</div></div><div style="text-align:right">'+monB+'<div style="margin-top:3px"><span class="fcbadge lv">LIVE</span></div></div></div>'+scoreDetail+'<div class="tc-rows"><div class="tc-row"><div class="tc-name '+(m.srv===1?'srv':'')+'">'+m.p1+'</div>'+r1+o1d+'</div><div class="tc-row"><div class="tc-name '+(m.srv===2?'srv':'')+'">'+m.p2+'</div>'+r2+o2d+'</div></div><div class="tc-info">'+oddsNote+'<div class="tc-badge">P2P: '+m.pbpLen+' juegos</div></div>'+aHtml+'</div></div>';
