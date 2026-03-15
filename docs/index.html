@@ -329,6 +329,10 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
     </div>
   </div>
 
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+    <button onclick="dismissAllAlerts()" style="background:rgba(255,230,0,.08);border:1px solid rgba(255,230,0,.25);color:var(--yel);padding:7px 14px;font-family:'Oswald',sans-serif;font-size:12px;font-weight:600;cursor:pointer;border-radius:var(--r);text-transform:uppercase;letter-spacing:.3px">👁 Ignorar todas las alertas activas</button>
+  </div>
+
   <div class="sumgrid">
     <div class="sumbox"><div class="sumval cg" id="ls-rot">—</div><div class="sumlbl">Roturas alertadas</div></div>
     <div class="sumbox"><div class="sumval cy" id="ls-mon">—</div><div class="sumlbl">Monitorizados</div></div>
@@ -453,6 +457,14 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
       <button class="pill" onclick="setBTRound('early',this)">Early (R32–R128)</button>
       <button class="pill" onclick="setBTRound('late',this)">Late (R16–F)</button>
       <button class="pill" onclick="setBTRound('q',this)">Qualif.</button>
+    </div>
+    <!-- Date range filter -->
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--wht3);text-transform:uppercase;letter-spacing:1px">Rango de fechas:</span>
+      <input type="date" id="bt-date-from" onchange="renderBT()" style="background:var(--bg4);border:1px solid var(--bd2);color:var(--wht);padding:4px 8px;font-family:'IBM Plex Mono',monospace;font-size:10px;border-radius:3px">
+      <span style="color:var(--wht4);font-size:11px">→</span>
+      <input type="date" id="bt-date-to" onchange="renderBT()" style="background:var(--bg4);border:1px solid var(--bd2);color:var(--wht);padding:4px 8px;font-family:'IBM Plex Mono',monospace;font-size:10px;border-radius:3px">
+      <button onclick="clearBTDates()" style="background:transparent;border:1px solid var(--bd2);color:var(--wht3);padding:4px 10px;font-family:'IBM Plex Mono',monospace;font-size:9px;cursor:pointer;border-radius:3px">Limpiar</button>
     </div>
     <div id="bt-time-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
       <button class="pill active" onclick="setBTTime('all',this)">Todo el tiempo</button>
@@ -590,6 +602,23 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
     </div>
     <div class="ibox b" style="margin-top:10px">
       El servidor hace el polling real. Este intervalo solo refresca la vista de la app cuando está abierta.
+    </div>
+  </div></div>
+
+  <div class="sc"><div class="sch">📊 Uso de APIs</div><div class="scb">
+    <div id="apiUsagePanel" style="font-family:'IBM Plex Mono',monospace;font-size:10px;background:var(--bg4);border:1px solid var(--bd2);border-radius:var(--r);padding:12px;line-height:1.8;margin-bottom:10px">
+      <span style="color:var(--wht4)">Pulsa "Ejecutar diagnóstico" para ver el uso de APIs</span>
+    </div>
+  </div></div>
+
+  <div class="sc"><div class="sch">🔬 Panel de diagnóstico del sistema</div><div class="scb">
+    <div id="diagPanel" style="font-family:'IBM Plex Mono',monospace;font-size:10px;background:var(--bg4);border:1px solid var(--bd2);border-radius:var(--r);padding:12px;line-height:1.8;margin-bottom:10px">
+      <span style="color:var(--wht4)">Pulsa "Ejecutar diagnóstico" para ver el estado completo del sistema</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="runDiag()" class="btn sm">🔬 Ejecutar diagnóstico</button>
+      <button onclick="runDiag(true)" class="btn sm" style="background:var(--bg3);border:1px solid var(--bd2);color:var(--wht)">⟳ Auto (30s)</button>
+      <button onclick="stopDiag()" class="btn sm" style="background:var(--bg3);border:1px solid var(--bd2);color:var(--wht3)">■ Parar</button>
     </div>
   </div></div>
 
@@ -735,8 +764,8 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
 // CONFIG
 // ═══════════════════════════════
 const FB_URL  = 'https://roturas25-default-rtdb.europe-west1.firebasedatabase.app';
-const TG_TOK  = '8171273424:AAGMvAxhDnt-HSZSZi8DJeV0j6YEwhfHC5E';
-const TG_CHAT = '6307700447';
+const TG_TOK  = ''; // configured on server
+const TG_CHAT = ''; // configured on server
 const UNIT    = 50;
 
 const DEFAULT_SERVER='https://roturas25prod-production.up.railway.app';
@@ -917,7 +946,17 @@ function pushFB(){
 // ═══════════════════════════════
 // TELEGRAM (desde app)
 // ═══════════════════════════════
-async function sendTG(msg){try{await fetch('https://api.telegram.org/bot'+TG_TOK+'/sendMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:TG_CHAT,text:msg})});}catch(e){}}
+async function sendTG(msg){
+  // TG token no está en el frontend — enviamos via el servidor
+  try{
+    if(!SERVER||!srvOk) return;
+    await fetch(SERVER+'/admin/push',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret:'roturas25deploy', message:msg})
+    });
+  }catch(e){}
+}
 async function testTG(){await sendTG('📱 Roturas25 app conectada. El servidor envía alertas automáticamente.');toast('Telegram','Mensaje de prueba enviado.');}
 
 // ═══════════════════════════════
@@ -1046,8 +1085,8 @@ function fCardHtml(m){
     +'</div>';
   const g2i=iL&&m.min>45?'<div class="fc-g2">Goles 2ªP: '+m.g2+'</div>':'';
   const fid=ee(m.h+' vs '+m.a);
-  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1)">📝 Registrar 2 apuestas</button></div>':'';
-  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@1.80x) y +1.5 (25€@3.00x)</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2)">📝 Registrar 2 apuestas</button></div>':''
+  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@'+(m.odds_ft05?m.odds_ft05+'x':'1.80x')+') y +1.5 (25€@'+(m.odds_ft15?m.odds_ft15+'x':'3.00x')+')</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1,'+( m.odds_ft05||1.80)+','+(m.odds_ft15||3.00)+')">📝 Registrar 2 apuestas</button></div>':'';
+  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@'+(m.odds_ft05?m.odds_ft05+'x':'1.80x')+') y +1.5 (25€@'+(m.odds_ft15?m.odds_ft15+'x':'3.00x')+')</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2,'+(m.odds_ft05||1.80)+','+(m.odds_ft15||3.00)+')">📝 Registrar 2 apuestas</button></div>':''
   return '<div class="card '+cls+'"><div class="fc-in"><div class="fc-time">'+th+tb+'</div><div><div class="fc-lg">'+m.league+'</div>'+teams+g2i+'</div></div>'+a25+a67+'</div>';
 }
 
@@ -1307,8 +1346,9 @@ function fbetDone(alertKey){
 }
 
 // Guardar 2 apuestas de fútbol de una vez (+0.5 y +1.5)
-function openFBotBet(matchName, half){
-  const prefix = half===1 ? '1ª' : '2ª';
+function openFBotBet(matchName, half, odds05, odds15){
+  const real05 = (odds05 && odds05 > 1.01) ? parseFloat(odds05) : 1.80;
+  const real15 = (odds15 && odds15 > 1.01) ? parseFloat(odds15) : 3.00;
   const simId05 = simData.find(s=>(s.type==='football_ht_05'||s.type==='football_2h_05')&&s.match===matchName)?.id||null;
   const simId15 = simData.find(s=>(s.type==='football_ht_15'||s.type==='football_2h_15')&&s.match===matchName)?.id||null;
   const type05 = half===1?'football_ht_05':'football_2h_05';
@@ -1316,15 +1356,13 @@ function openFBotBet(matchName, half){
   const alertKey = (half===1?'a25_':'a67_')+'fd_'+matchName.replace(/ vs /,'_');
   const now = new Date();
   const dateStr = now.toLocaleDateString('es-ES')+' '+now.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
-  // Apuesta +0.5 goles
-  bets.unshift({id:Date.now(), match:matchName, odds:1.80, stake:50, type:type05,
+  bets.unshift({id:Date.now(), match:matchName, odds:real05, stake:50, type:type05,
     outcome:'pending', profit:0, date:dateStr, _simId:simId05, _alertKey:alertKey});
-  // Apuesta +1.5 goles  
-  bets.unshift({id:Date.now()+1, match:matchName, odds:3.00, stake:25, type:type15,
+  bets.unshift({id:Date.now()+1, match:matchName, odds:real15, stake:25, type:type15,
     outcome:'pending', profit:0, date:dateStr, _simId:simId15, _alertKey:alertKey});
   lss('r25_bets',bets); pushFB(); renderLog(); updateStats();
-  toast('✅ Apuestas registradas', matchName+' — +0.5 @1.80x (50€) y +1.5 @3.00x (25€)');
-  renderAll(); // refresca para quitar el botón
+  toast('✅ Apuestas registradas', matchName+' — +0.5 @'+real05+'x (50€) y +1.5 @'+real15+'x (25€)');
+  renderAll();
 }
 
 function inferTennisType(detail){
@@ -1339,7 +1377,21 @@ function res(id,out){const b=bets.find(x=>x.id===id);if(!b)return;b.outcome=out;
 function delBet(id){bets=bets.filter(b=>b.id!==id);lss('r25_bets',bets);pushFB();renderLog();updateStats();}
 function clearBets(){if(!confirm('¿Borrar todas las apuestas?'))return;bets=[];lss('r25_bets',bets);pushFB();renderLog();updateStats();}
 
-// ── Reset completo servidor + local ──
+// ── Ignorar todas las alertas activas ─────────────────────────────────────────
+function dismissAllAlerts(){
+  if(!confirm('¿Ignorar todas las alertas activas? No registrarás ninguna apuesta de estas alertas.'))return;
+  const active = simData.filter(s=>!s.resolved&&s.type!=='tennis_recovery');
+  active.forEach(s=>{ registeredAlerts.add(s.id); });
+  lss('r25_regAlerts',[...registeredAlerts].slice(-500));
+  lss('r25_lastAlerts',[...lastAlertIds].slice(-200));
+  alertQueue = [];
+  const qBadge=$i('alert-queue-badge');
+  if(qBadge) qBadge.style.display='none';
+  renderAll();
+  toast('Alertas ignoradas',active.length+' alertas descartadas. No se registrará ninguna apuesta.');
+}
+
+// ── Reset completo servidor + local ──────────────────────────────────────────
 async function resetDB(){
   if(!confirm('⚠️ RESET DATABASE\n\nEsto borrará TODOS los simAlerts del servidor y el estado local.\nLas apuestas registradas no se borran.\n\n¿Continuar?'))return;
   const code=prompt('Escribe exactamente: RESET para confirmar');
@@ -1350,7 +1402,6 @@ async function resetDB(){
       const d=await r.json();
       if(!d.ok)throw new Error('Servidor devolvió error');
     }
-    // Limpiar local
     simData=[];
     lss('r25_lastAlerts','[]');
     lastAlertIds=new Set();
@@ -1358,6 +1409,110 @@ async function resetDB(){
     toast('Reset OK','Estado del servidor y local reseteado.');
     renderAll();
   }catch(e){toast('Error reset',e.message,'warn');}
+}
+
+// ── Diagnóstico sistema ───────────────────────────────────────────────────────
+let diagTimer = null;
+async function runDiag(auto=false){
+  const el=$i('diagPanel');
+  if(!el)return;
+  el.innerHTML='<span style="color:var(--yel)">⟳ Consultando servidor...</span>';
+  try{
+    const r=await fetch(SERVER+'/diagnostics',{signal:AbortSignal.timeout(8000)});
+    const d=await r.json();
+    const ago = s => {
+      if(!s) return '✗ nunca';
+      const ms = Date.now()-new Date(s).getTime();
+      if(ms<60000) return '✓ hace '+Math.round(ms/1000)+'s';
+      if(ms<3600000) return '⚠ hace '+Math.round(ms/60000)+'min';
+      return '✗ hace '+Math.round(ms/3600000)+'h';
+    };
+    const ok = c => c&&c.includes('✓')?'<span style="color:var(--grn)">'+c+'</span>':'<span style="color:var(--red)">'+c+'</span>';
+    const lines = [
+      '<strong style="color:var(--grn)">ROTURAS25 '+d.version+' · uptime '+Math.floor(d.uptime/60)+'min</strong>',
+      '',
+      '<strong>APIs:</strong>',
+      '  Football-data.org: '+ok(d.apis.football.key)+' · last call: '+ago(d.apis.football.lastOk)+(d.apis.football.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.football.lastErrMsg+'</span>':''),
+      '  AllSports Tennis:  '+ok(d.apis.tennis.key)+' · last call: '+ago(d.apis.tennis.lastOk)+(d.apis.tennis.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.tennis.lastErrMsg+'</span>':''),
+      '  Tennis Odds:       '+ok(d.apis.odds.key)+' · last odds: '+ago(d.apis.odds.lastOk)+' · cache: '+d.apis.odds.cacheSize+(d.apis.odds.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.odds.lastErrMsg+'</span>':''),
+      '  TheOdds (fútbol):  '+ok(d.apis.theodds.key)+' · last: '+ago(d.apis.theodds.lastOk)+' · cache: '+d.apis.theodds.cacheSize+(d.apis.theodds.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.theodds.lastErrMsg+'</span>':''),
+      '  Firebase:          '+ago(d.apis.firebase.lastOk)+(d.apis.firebase.lastErrMsg?' · ERR: '+d.apis.firebase.lastErrMsg:''),
+      '  Telegram:          '+ago(d.apis.telegram.lastOk),
+      '',
+      '<strong>Live:</strong>',
+      '  Tenis live monitorizados: <span style="color:var(--blu)">'+d.live.tennis+'</span>',
+      '  Fútbol en juego: <span style="color:var(--blu)">'+d.live.football_inplay+'</span> / '+d.live.football_total+' total',
+      '',
+      '<strong>Simulaciones:</strong>',
+      '  Total: '+d.sims.total+' · Pendientes tenis: '+d.sims.pending_tennis+' · Fútbol: '+d.sims.pending_football,
+      d.sims.stale_over_6h>0?'  <span style="color:var(--yel)">⚠ '+d.sims.stale_over_6h+' sin resolver >6h · '+d.sims.stale_over_24h+' >24h</span>':'  Sin alertas caducadas ✓',
+      '',
+      '<strong>Cache:</strong>',
+      '  Odds tenis: '+d.cache.odds_tennis+' · Odds fútbol: '+d.cache.odds_football+' · Alerted keys: '+d.cache.alerted_keys,
+    ];
+    if(d.sims.stale_details?.length){
+      lines.push('','<strong>Alertas >6h sin resolver:</strong>');
+      d.sims.stale_details.forEach(s=>lines.push('  '+s.type+' · '+s.match+' · '+new Date(s.alertedAt).toLocaleString('es-ES')));
+    }
+    if(d.sims.stale_over_6h>0){
+      lines.push('','<strong style="color:var(--yel)">Prompt para Claude si hay alertas sin resolver:</strong>');
+      lines.push('<span style="color:var(--wht3);font-size:9px">Hay '+d.sims.stale_over_6h+' alertas en Roturas25 sin resolver después de 6h. Analiza resolveFootballSims() y resolveTennisSims() y corrige la lógica de resolución.</span>');
+    }
+    el.innerHTML = lines.join('\n');
+
+    // Render API usage panel
+    if(d.apiUsage) renderApiUsage(d.apiUsage);
+
+    if(auto){
+      clearTimeout(diagTimer);
+      diagTimer = setTimeout(()=>runDiag(true), 30000);
+    }
+  }catch(e){
+    el.innerHTML='<span style="color:var(--red)">✗ Error al conectar con /diagnostics: '+e.message+'</span>\n<span style="color:var(--wht3)">Comprueba que el servidor está activo en Railway.</span>';
+  }
+}
+function stopDiag(){clearTimeout(diagTimer);diagTimer=null;toast('Diagnóstico','Auto-refresco parado.');}
+
+function renderApiUsage(u){
+  const el=$i('apiUsagePanel');
+  if(!el||!u)return;
+  function bar(pct,warn=80,danger=95){
+    if(pct===null||pct===undefined) return '<span style="color:var(--wht4)">sin límite diario</span>';
+    const col = pct>=danger?'var(--red)':pct>=warn?'var(--yel)':'var(--grn)';
+    const w = Math.min(pct,100);
+    return '<span style="color:'+col+'">'+pct+'%</span> <span style="background:var(--bg2);display:inline-block;width:60px;height:6px;border-radius:3px;vertical-align:middle"><span style="display:inline-block;width:'+w+'%;height:6px;border-radius:3px;background:'+col+'"></span></span>';
+  }
+  const t=u.today, m=u.month;
+  const lines=[
+    '<strong style="color:var(--grn)">Uso de APIs — '+( u.date||'hoy')+'</strong>',
+    '',
+    '<strong>Hoy:</strong>',
+    '  football-data.org: '+t.football.calls+' llamadas · límite: '+(t.football.limit_daily||'—')+'/día · '+bar(t.football.pct),
+    '  AllSports:         '+t.allsports.calls+' llamadas · límite: '+(t.allsports.limit_daily||'—')+'/día · '+bar(t.allsports.pct),
+    '  TheOdds:           '+t.theodds.calls+' llamadas · límite diario: sin límite documentado',
+    '',
+    '<strong>Este mes:</strong>',
+    '  football-data.org: '+m.football.calls+'/'+m.football.limit+' ('+bar(m.football.pct)+')',
+    '  AllSports:         '+m.allsports.calls+'/'+m.allsports.limit+' ('+bar(m.allsports.pct)+')',
+    '  TheOdds:           '+m.theodds.calls+'/'+m.theodds.limit+' ('+bar(m.theodds.pct)+')',
+  ];
+  if(u.history&&u.history.length>1){
+    lines.push('','<strong>Últimos días (AllSports):</strong>');
+    u.history.slice(-5).forEach(d=>{
+      lines.push('  '+d.date+': football='+d.football+' allsports='+d.allsports+' theodds='+d.theodds);
+    });
+  }
+  // Warning if near limit
+  if(m.allsports.pct>=80) lines.push('','<span style="color:var(--yel)">⚠ AllSports al '+m.allsports.pct+'% del límite mensual. Considera reducir pollOdds de 15s a 30s.</span>');
+  if(m.theodds.pct>=80) lines.push('<span style="color:var(--yel)">⚠ TheOdds al '+m.theodds.pct+'% del límite mensual (500 req/mes).</span>');
+  el.innerHTML=lines.join('\n');
+}
+
+// ── BT date range filter ──────────────────────────────────────────────────────
+function clearBTDates(){
+  const f=$i('bt-date-from'),t=$i('bt-date-to');
+  if(f)f.value=''; if(t)t.value='';
+  renderBT();
 }
 
 // ═══════════════════════════════
@@ -1535,10 +1690,10 @@ function syncBTFromSims(sims) {
         detail:  s.detail,
         odds:    cfg.odds,
         stake:   cfg.stake,
-        _realOdds: cfg.isReal,  // true si la cuota viene del API live
+        _realOdds: cfg.isReal,
         outcome: s.resolved ? (s.outcome === 'WIN' ? 'win' : 'loss') : 'pending',
         profit:  0,
-        alertedAt: s.alertedAt,
+        alertedAt: s.alertedAt || new Date().toISOString(),
         resolvedAt: s.resolvedAt || null,
         _market:   s._market   || null,
         _half:     s._half     || null,
@@ -1552,6 +1707,8 @@ function syncBTFromSims(sims) {
         odds_match:   s.odds_match   || null,
         odds_set2:    s.odds_set2    || null,
         odds_current: s.odds_current || null,
+        odds_ft05:    s.odds_ft05    || null,
+        odds_ft15:    s.odds_ft15    || null,
       };
       entry.profit = entry.outcome === 'win' ? parseFloat(((cfg.odds-1)*cfg.stake).toFixed(2))
                    : entry.outcome === 'loss' ? -cfg.stake : 0;
@@ -1736,7 +1893,10 @@ function renderBT() {
 
   // Filtrar lista
   const now = new Date();
+  const btDateFrom = $i('bt-date-from')?.value ? new Date($i('bt-date-from').value+'T00:00:00') : null;
+  const btDateTo   = $i('bt-date-to')?.value   ? new Date($i('bt-date-to').value+'T23:59:59')   : null;
   const flt = btData.filter(b => {
+    if (!b.alertedAt) return true; // FIX BUG 7: null check
     // Filtro principal
     if (btFilter === 'win')      { if (b.outcome !== 'win')  return false; }
     else if (btFilter === 'loss') { if (b.outcome !== 'loss') return false; }
@@ -1754,6 +1914,12 @@ function renderBT() {
     else if (btFilter === 'atp250')   { if (b._tier !== 'atp250'  && b._tier !== 'wta250')  return false; }
     else if (btFilter === 'challenger') { if (b._tier !== 'challenger') return false; }
     else if (btFilter === 'itf')      { if (b._tier !== 'itf') return false; }
+    // Date range filter
+    const d = new Date(b.alertedAt);
+    if (!isNaN(d.getTime())) {
+      if (btDateFrom && d < btDateFrom) return false;
+      if (btDateTo   && d > btDateTo)   return false;
+    }
     // Filtro de ronda
     if (btRoundFilter !== 'all') {
       if (btRoundFilter === 'early') { if (!['r128','r64','r32'].includes(b._round)) return false; }
@@ -1828,11 +1994,13 @@ function renderBT() {
     const surfBadge = b._surface ? '<span style="font-size:8px;margin-right:3px" title="'+b._surface+'">'+(SURF_LABEL[b._surface]||'')+'</span>' : '';
     const tierBadge = b._tier ? '<span style="background:var(--bg4);padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px;color:var(--wht3)">'+(TIER_LABEL[b._tier]||b._tier)+'</span>' : '';
     const roundBadge = b._round ? '<span style="background:rgba(255,200,50,.12);color:#ffc832;padding:1px 5px;border-radius:3px;font-size:8px;margin-right:4px">'+(ROUND_LABEL[b._round]||b._round)+'</span>' : '';
-    const oddsLiveHtml = (b.odds_match||b.odds_set2||b.odds_current)
+    const oddsLiveHtml = (b.odds_match||b.odds_set2||b.odds_current||b.odds_ft05||b.odds_ft15)
       ? '<div class="sim-detail" style="margin-top:2px;color:var(--blu)">'
-        +(b.odds_match?'M:@'+b.odds_match+'x ':'' )
-        +(b.odds_set2 ?'S2:@'+b.odds_set2+'x ':'' )
-        +(b.odds_current?'Set:@'+b.odds_current+'x':'')
+        +(b.odds_match  ? 'M:@'+b.odds_match+'x '  : '' )
+        +(b.odds_set2   ? 'S2:@'+b.odds_set2+'x '  : '' )
+        +(b.odds_current? 'Set:@'+b.odds_current+'x': '' )
+        +(b.odds_ft05   ? '+0.5:@'+b.odds_ft05+'x ' : '' )
+        +(b.odds_ft15   ? '+1.5:@'+b.odds_ft15+'x'  : '' )
         +'</div>'
       : '';
     return '<div class="sim-row ' + oc + '">'
