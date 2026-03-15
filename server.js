@@ -277,10 +277,12 @@ function getSurface(trn, country, leagueKey){
 // ── Odds: AllSports (tenis pre-match y live) ──────────────────────────────────
 function buildOddsCache(result){
   if(!result||typeof result!=='object') return;
-  // FIX BUG 4: result is keyed by event_id, each value has bet types
+  const LIVE_TTL = 5 * 60 * 1000; // 5 minutes — protect fresh live odds
   Object.entries(result).forEach(([id,data])=>{
-    // data = { "Match Winner": { Home: {bk:odd}, Away: {bk:odd} }, "Set 1 Winner": {...}, ... }
     const existing = oddsCache.get(id) || {};
+    // FIX: never overwrite fresh Betfair/live data with stale pre-match
+    if (existing.source === 'betfair' && existing.updated && (Date.now()-existing.updated) < LIVE_TTL) return;
+    if (existing.source === 'oddsapiio' && existing.updated && (Date.now()-existing.updated) < LIVE_TTL) return;
 
     // Match winner odds
     const hw = data['Home/Away'] || data['1X2'] || data['Match Winner'] || data['Winner'] || null;
@@ -363,6 +365,10 @@ async function pollOdds() {
       }
 
       const existing = oddsCache.get(m._key) || {};
+      // FIX: never overwrite fresh Betfair data with AllSports pre-match
+      const LIVE_TTL = 5 * 60 * 1000;
+      if (existing.source === 'betfair' && existing.updated && (Date.now()-existing.updated) < LIVE_TTL) return;
+      if (existing.source === 'oddsapiio' && existing.updated && (Date.now()-existing.updated) < LIVE_TTL) return;
       let changed = false;
 
       function medianOdd(obj) {
@@ -1135,15 +1141,21 @@ function normT(e){
     // The break will be detected when pbp becomes available
   }
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  // Get live odds from cache
-  const cached = oddsCache.get(String(e.event_key)) || {};
+  // FIX: read live odds (Betfair/oddsapiio) from tennisOddsCache first, fall back to AllSports oddsCache
+  const tcLive = tennisOddsCache.get(String(e.event_key)) || {};
+  const tcPre  = oddsCache.get(String(e.event_key)) || {};
+  const liveMatch   = tcLive.match   || tcPre.match   || null;
+  const liveSet2    = tcLive.set2    || tcPre.set2    || null;
+  const liveCurrent = tcLive.current || tcPre.current || null;
+  const oddsSource  = tcLive.source_match || tcPre.source || 'allsports';
   return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
     curSetNum,lastBreak,pbpLen:pbp.length,mon,isUp:false,hasOdds:o1!=null||o2!=null,liveO1:o1,liveO2:o2,
-    odds_match:   cached.match   || null,
-    odds_set2:    cached.set2    || null,
-    odds_current: cached.current || null,
+    odds_match:   liveMatch,
+    odds_set2:    liveSet2,
+    odds_current: liveCurrent,
+    odds_source:  oddsSource,
   };
 }
 
@@ -1436,7 +1448,7 @@ const server=http.createServer((req,res)=>{
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify({
-      ok:true, version:'v12',
+      ok:true, version:'v13',
       football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
       betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
       oddsapiio: !!ODDS_API_IO_KEY,
@@ -1541,6 +1553,59 @@ const server=http.createServer((req,res)=>{
     return;
   }
 
+  if(path==='/test-odds'&&req.method==='GET'){
+    // Live verification endpoint — shows current state of ALL odds caches
+    const liveTennis = lastTennis.filter(m=>!m.isUp);
+    const liveFootball = lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED');
+    const tennisOddsReport = liveTennis.map(m => {
+      const tc = tennisOddsCache.get(m._key) || {};
+      const oc = oddsCache.get(m._key) || {};
+      return {
+        match: m.p1+' vs '+m.p2,
+        tournament: m.trn,
+        betfair: { match: tc.match, set2: tc.set2, current: tc.current, source: tc.source_match, updated: tc.updatedAt ? new Date(tc.updatedAt).toISOString() : null },
+        allsports: { o1: oc.o1, o2: oc.o2, match: oc.match, set2: oc.set2, updated: oc.updated ? new Date(oc.updated).toISOString() : null },
+        final_shown: { match: m.odds_match, set2: m.odds_set2, current: m.odds_current, source: m.odds_source },
+      };
+    });
+    const footballOddsReport = liveFootball.map(m => {
+      const fc = footballOddsCache.get(m.id) || {};
+      return {
+        match: m.h+' vs '+m.a,
+        league: m.league, minute: m.min,
+        odds: { ft05: fc.ft05, ft15: fc.ft15, source_ft05: fc.source_ft05, source_ft15: fc.source_ft15, updated: fc.updatedAt ? new Date(fc.updatedAt).toISOString() : null },
+        in_match_object: { ft05: m.odds_ft05, ft15: m.odds_ft15 },
+      };
+    });
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      timestamp: nowISO(),
+      betfair_status: {
+        ssoid_set: !!BETFAIR_SSOID,
+        app_key_set: !!BETFAIR_APP_KEY,
+        last_ok: diag.betfair.lastOk,
+        last_err: diag.betfair.lastErr,
+        last_err_msg: diag.betfair.lastErrMsg,
+        sso_expired: diag.betfair.ssoExpired,
+        markets_found: diag.betfair.marketsFound,
+        call_count: diag.betfair.callCount,
+      },
+      oddsapiio_status: {
+        key_set: !!ODDS_API_IO_KEY,
+        last_ok: diag.oddsapiio.lastOk,
+        last_err_msg: diag.oddsapiio.lastErrMsg,
+        call_count: diag.oddsapiio.callCount,
+      },
+      live_tennis_count: liveTennis.length,
+      live_football_count: liveFootball.length,
+      tennis_odds_cache_size: tennisOddsCache.size,
+      football_odds_cache_size: footballOddsCache.size,
+      tennis: tennisOddsReport,
+      football: footballOddsReport,
+    }, null, 2));
+    return;
+  }
+
   if(path==='/api-usage'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify(apiUsageSummary()));
@@ -1589,7 +1654,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v12 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v13 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
