@@ -1186,20 +1186,21 @@ function tCardHtml(m){
     '</div>';
   let aHtml='';
   if(iA&&m.lastBreak&&fN){
-    // Get best available odds: tennisOddsCache > oddsCache > _favO
-    const toc = (window._tennisOdds||{})[m._key] || {};
-    const oc  = (window._oddsCache ||{})[m._key] || {};
-    const liveMatch   = toc.match   || oc.match   || null;
-    const liveSet2    = toc.set2    || oc.set2    || null;
-    const liveCurrent = toc.current || oc.current || null;
-    const src         = toc.source_match || oc.source || null;
-    const srcBadge    = src ? '<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 5px;border-radius:3px;margin-left:4px;background:'+(src==='betfair'?'rgba(255,184,0,.15)':src==='oddsapiio'?'rgba(94,200,248,.15)':'rgba(0,255,136,.1)')+';">'+(src==='betfair'?'BF':src==='oddsapiio'?'OAI':'AS')+'</span>' : '';
+    // Odds come directly from the match object (server v13 normT() picks best source: Betfair > oddsapiio > AllSports)
+    const liveMatch   = m.odds_match   || null;
+    const liveSet2    = m.odds_set2    || null;
+    const liveCurrent = m.odds_current || null;
+    const src         = m.odds_source  || null;
+    const srcLabel    = src==='betfair'?'BF':src==='oddsapiio'?'OAI':src?'AS':null;
+    const srcColor    = src==='betfair'?'rgba(255,184,0,.2)':src==='oddsapiio'?'rgba(94,200,248,.15)':'rgba(0,255,136,.1)';
+    const srcBadge    = srcLabel?'<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 5px;border-radius:3px;margin-left:4px;background:'+srcColor+'">'+srcLabel+'</span>':'';
     const liveOddsHtml = (liveMatch||liveSet2||liveCurrent)
       ? '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--blu);margin-top:4px;line-height:1.8">'
-        + (liveMatch   ? 'Match: <strong style="color:var(--grn)">@'+liveMatch+'x</strong>'+srcBadge+' &nbsp;' : '')
-        + (liveCurrent ? 'Set'+m.curSetNum+': <strong style="color:var(--grn)">@'+liveCurrent+'x</strong> &nbsp;' : '')
+        + (liveMatch   ? 'Match: <strong style="color:var(--grn)">@'+liveMatch+'x</strong>'+srcBadge+'&nbsp;' : '')
+        + (liveCurrent ? 'Set'+m.curSetNum+': <strong style="color:var(--grn)">@'+liveCurrent+'x</strong>&nbsp;' : '')
         + (liveSet2    ? 'Set2: <strong style="color:var(--grn)">@'+liveSet2+'x</strong>' : '')
-        + '</div>' : '';
+        +'</div>'
+      : '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--wht4);margin-top:3px">Cuotas live: esperando Betfair...</div>';
     aHtml='<div class="tc-alert"><div class="tc-alert-title">🟢 ROTO — '+fN.toUpperCase()+' VA PERDIENDO</div><div class="tc-alert-sc">'+m.p1+' <strong>'+m.lastBreak.gP1+'–'+m.lastBreak.gP2+'</strong> '+m.p2+' · Set '+m.curSetNum+'</div><div class="tc-alert-odds">Favorito: <strong>'+fN+'</strong> @<strong>'+fO+'x</strong> pre-match<br><span style="font-size:9px;opacity:.7">Alerta ya enviada a Telegram</span></div>'+liveOddsHtml+'<button class="logbtn g" onclick="openBetFromCard(\''+m.id+'\')">📝 Registrar apuesta</button></div>';
   }
   return '<div class="card '+(iA?'alert':m.mon?'mon':'live')+'"><div class="tc-in"><div class="tc-top"><div><div class="tc-trn">'+m.trn+'</div><div class="tc-cat '+m.cat+'">'+cl+'</div></div><div style="text-align:right">'+monB+'<div style="margin-top:3px"><span class="fcbadge lv">LIVE</span></div></div></div>'+scoreDetail+'<div class="tc-rows"><div class="tc-row"><div class="tc-name '+(m.srv===1?'srv':'')+'">'+m.p1+'</div>'+r1+o1d+'</div><div class="tc-row"><div class="tc-name '+(m.srv===2?'srv':'')+'">'+m.p2+'</div>'+r2+o2d+'</div></div><div class="tc-info">'+oddsNote+'<div class="tc-badge">P2P: '+m.pbpLen+' juegos</div></div>'+aHtml+'</div></div>';
@@ -1482,6 +1483,8 @@ async function runDiag(auto=false){
       clearTimeout(diagTimer);
       diagTimer = setTimeout(()=>runDiag(true), 30000);
     }
+    // Add test-odds link
+    el.innerHTML += '\n\n<a href="'+SERVER+'/test-odds" target="_blank" style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--blu);text-decoration:none">🔗 Ver estado completo de cuotas en tiempo real (/test-odds)</a>';
   }catch(e){
     el.innerHTML='<span style="color:var(--red)">✗ Error al conectar con /diagnostics: '+e.message+'</span>\n<span style="color:var(--wht3)">Comprueba que el servidor está activo en Railway.</span>';
   }
