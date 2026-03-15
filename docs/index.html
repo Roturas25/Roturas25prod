@@ -840,14 +840,17 @@ async function fetchData(){
     const d=await r.json();
     fData=d.football||[];
     tData=d.tennis||[];
+    // Store live odds caches from server
+    window._oddsCache       = d.odds        || {};
+    window._footballOdds    = d.footballOdds|| {};
+    window._tennisOdds      = d.tennisOdds  || {};
     // Merge server alerted keys
     (d.alerted||[]).forEach(k=>alertedSet.add(k));
     lss('r25_alerted',[...alertedSet]);
     // Sim alerts
     const newSims=d.simAlerts||[];
     checkNewAlerts(newSims);
-    syncBTFromSims(newSims); // backtest automático
-    // Resolución automática: si un simAlert se resuelve y hay apuesta vinculada, actualizar
+    syncBTFromSims(newSims);
     const prevSims=simData;
     simData=newSims;
     newSims.forEach(s=>{
@@ -1085,8 +1088,8 @@ function fCardHtml(m){
     +'</div>';
   const g2i=iL&&m.min>45?'<div class="fc-g2">Goles 2ªP: '+m.g2+'</div>':'';
   const fid=ee(m.h+' vs '+m.a);
-  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@'+(m.odds_ft05?m.odds_ft05+'x':'1.80x')+') y +1.5 (25€@'+(m.odds_ft15?m.odds_ft15+'x':'3.00x')+')</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1,'+( m.odds_ft05||1.80)+','+(m.odds_ft15||3.00)+')">📝 Registrar 2 apuestas</button></div>':'';
-  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">Registra +0.5 (50€@'+(m.odds_ft05?m.odds_ft05+'x':'1.80x')+') y +1.5 (25€@'+(m.odds_ft15?m.odds_ft15+'x':'3.00x')+')</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2,'+(m.odds_ft05||1.80)+','+(m.odds_ft15||3.00)+')">📝 Registrar 2 apuestas</button></div>':''
+  const a25=m.a25&&!fbetDone('a25_'+m.id)?'<div class="abar g"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · 0-0 → GOL 1ª PARTE<br><small style="opacity:.7">+0.5 @'+(m.odds_ft05?'<strong>'+m.odds_ft05+'x</strong>':'1.80x')+(m.odds_ft05&&(window._footballOdds||{})[m.id]?.source_ft05?' <span style="font-size:8px;color:var(--yel)">'+(window._footballOdds[m.id].source_ft05==='betfair'?'BF':'OAI')+'</span>':'')+' · +1.5 @'+(m.odds_ft15?'<strong>'+m.odds_ft15+'x</strong>':'3.00x')+'</small></div><button class="logbtn g" onclick="openFBotBet(\''+fid+'\',1,'+(m.odds_ft05||1.80)+','+(m.odds_ft15||3.00)+')">📝 Registrar 2 apuestas</button></div>':'';
+  const a67=m.a67&&!fbetDone('a67_'+m.id)?'<div class="abar y"><div class="atxt">⚡ MIN.'+(m.min||'?')+' · SIN GOL 2ª PARTE<br><small style="opacity:.7">+0.5 @'+(m.odds_ft05?'<strong>'+m.odds_ft05+'x</strong>':'1.80x')+' · +1.5 @'+(m.odds_ft15?'<strong>'+m.odds_ft15+'x</strong>':'3.00x')+'</small></div><button class="logbtn y" onclick="openFBotBet(\''+fid+'\',2,'+(m.odds_ft05||1.80)+','+(m.odds_ft15||3.00)+')">📝 Registrar 2 apuestas</button></div>':''
   return '<div class="card '+cls+'"><div class="fc-in"><div class="fc-time">'+th+tb+'</div><div><div class="fc-lg">'+m.league+'</div>'+teams+g2i+'</div></div>'+a25+a67+'</div>';
 }
 
@@ -1183,14 +1186,20 @@ function tCardHtml(m){
     '</div>';
   let aHtml='';
   if(iA&&m.lastBreak&&fN){
-    // Cuotas live del oddsCache del servidor (si están disponibles)
-    const relSim=simData.find(s=>s._eventId===m.id&&s.type==='tennis_break'&&!s.resolved);
-    const liveOddsHtml=relSim&&(relSim.odds_match||relSim.odds_set2||relSim.odds_current)?
-      '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--blu);margin-top:4px;line-height:1.8">'
-      +(relSim.odds_match?'Match: <strong style="color:var(--grn)">@'+relSim.odds_match+'x</strong> &nbsp;':'')
-      +(relSim.odds_set2?'Set2: <strong style="color:var(--grn)">@'+relSim.odds_set2+'x</strong> &nbsp;':'')
-      +(relSim.odds_current?'Set actual: <strong style="color:var(--grn)">@'+relSim.odds_current+'x</strong>':'')
-      +'</div>':'';
+    // Get best available odds: tennisOddsCache > oddsCache > _favO
+    const toc = (window._tennisOdds||{})[m._key] || {};
+    const oc  = (window._oddsCache ||{})[m._key] || {};
+    const liveMatch   = toc.match   || oc.match   || null;
+    const liveSet2    = toc.set2    || oc.set2    || null;
+    const liveCurrent = toc.current || oc.current || null;
+    const src         = toc.source_match || oc.source || null;
+    const srcBadge    = src ? '<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 5px;border-radius:3px;margin-left:4px;background:'+(src==='betfair'?'rgba(255,184,0,.15)':src==='oddsapiio'?'rgba(94,200,248,.15)':'rgba(0,255,136,.1)')+';">'+(src==='betfair'?'BF':src==='oddsapiio'?'OAI':'AS')+'</span>' : '';
+    const liveOddsHtml = (liveMatch||liveSet2||liveCurrent)
+      ? '<div style="font-family:IBM Plex Mono,monospace;font-size:9px;color:var(--blu);margin-top:4px;line-height:1.8">'
+        + (liveMatch   ? 'Match: <strong style="color:var(--grn)">@'+liveMatch+'x</strong>'+srcBadge+' &nbsp;' : '')
+        + (liveCurrent ? 'Set'+m.curSetNum+': <strong style="color:var(--grn)">@'+liveCurrent+'x</strong> &nbsp;' : '')
+        + (liveSet2    ? 'Set2: <strong style="color:var(--grn)">@'+liveSet2+'x</strong>' : '')
+        + '</div>' : '';
     aHtml='<div class="tc-alert"><div class="tc-alert-title">🟢 ROTO — '+fN.toUpperCase()+' VA PERDIENDO</div><div class="tc-alert-sc">'+m.p1+' <strong>'+m.lastBreak.gP1+'–'+m.lastBreak.gP2+'</strong> '+m.p2+' · Set '+m.curSetNum+'</div><div class="tc-alert-odds">Favorito: <strong>'+fN+'</strong> @<strong>'+fO+'x</strong> pre-match<br><span style="font-size:9px;opacity:.7">Alerta ya enviada a Telegram</span></div>'+liveOddsHtml+'<button class="logbtn g" onclick="openBetFromCard(\''+m.id+'\')">📝 Registrar apuesta</button></div>';
   }
   return '<div class="card '+(iA?'alert':m.mon?'mon':'live')+'"><div class="tc-in"><div class="tc-top"><div><div class="tc-trn">'+m.trn+'</div><div class="tc-cat '+m.cat+'">'+cl+'</div></div><div style="text-align:right">'+monB+'<div style="margin-top:3px"><span class="fcbadge lv">LIVE</span></div></div></div>'+scoreDetail+'<div class="tc-rows"><div class="tc-row"><div class="tc-name '+(m.srv===1?'srv':'')+'">'+m.p1+'</div>'+r1+o1d+'</div><div class="tc-row"><div class="tc-name '+(m.srv===2?'srv':'')+'">'+m.p2+'</div>'+r2+o2d+'</div></div><div class="tc-info">'+oddsNote+'<div class="tc-badge">P2P: '+m.pbpLen+' juegos</div></div>'+aHtml+'</div></div>';
@@ -1433,11 +1442,17 @@ async function runDiag(auto=false){
       '',
       '<strong>APIs:</strong>',
       '  Football-data.org: '+ok(d.apis.football.key)+' · last call: '+ago(d.apis.football.lastOk)+(d.apis.football.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.football.lastErrMsg+'</span>':''),
-      '  AllSports Tennis:  '+ok(d.apis.tennis.key)+' · last call: '+ago(d.apis.tennis.lastOk)+(d.apis.tennis.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.tennis.lastErrMsg+'</span>':''),
-      '  Tennis Odds:       '+ok(d.apis.odds.key)+' · last odds: '+ago(d.apis.odds.lastOk)+' · cache: '+d.apis.odds.cacheSize+(d.apis.odds.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.odds.lastErrMsg+'</span>':''),
-      '  TheOdds (fútbol):  '+ok(d.apis.theodds.key)+' · last: '+ago(d.apis.theodds.lastOk)+' · cache: '+d.apis.theodds.cacheSize+(d.apis.theodds.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.theodds.lastErrMsg+'</span>':''),
+      '  AllSports Tennis:  '+ok(d.apis.tennis.key)+' · last: '+ago(d.apis.tennis.lastOk)+(d.apis.tennis.lastErrMsg?' · ERR: <span style="color:var(--red)">'+d.apis.tennis.lastErrMsg+'</span>':''),
+      '  AllSports Odds:    '+ok(d.apis.odds.key)+' · last: '+ago(d.apis.odds.lastOk)+' · cache: '+d.apis.odds.cacheSize,
+      '  Betfair:           '+ok(d.apis.betfair?.key||'?')+' · last: '+ago(d.apis.betfair?.lastOk)+' · mercados: '+(d.apis.betfair?.marketsFound||0)+(d.apis.betfair?.ssoExpired?' · <span style="color:var(--red)">⚠ SSOID EXPIRADO — actualiza BETFAIR_SSOID en Railway</span>':''),
+      '  odds-api.io:       '+ok(d.apis.oddsapiio?.key||'?')+' · last: '+ago(d.apis.oddsapiio?.lastOk)+' · cache: '+(d.apis.oddsapiio?.cacheSize||0)+(d.apis.oddsapiio?.lastErrMsg?' · '+d.apis.oddsapiio.lastErrMsg:''),
+      '  TheOdds (fútbol):  '+ok(d.apis.theodds.key)+' · last: '+ago(d.apis.theodds.lastOk)+' · cache: '+d.apis.theodds.cacheSize,
       '  Firebase:          '+ago(d.apis.firebase.lastOk)+(d.apis.firebase.lastErrMsg?' · ERR: '+d.apis.firebase.lastErrMsg:''),
       '  Telegram:          '+ago(d.apis.telegram.lastOk),
+      '',
+      '<strong>Fuentes de cuotas activas:</strong>',
+      '  Tenis — BF: '+(d.odds_sources?.tennis_betfair||0)+' · OAI: '+(d.odds_sources?.tennis_oddsapiio||0)+' · AllSports: '+(d.odds_sources?.tennis_allsports||0),
+      '  Fútbol — BF: '+(d.odds_sources?.football_betfair||0)+' · OAI: '+(d.odds_sources?.football_oddsapiio||0)+' · TheOdds: '+(d.odds_sources?.football_theodds||0),
       '',
       '<strong>Live:</strong>',
       '  Tenis live monitorizados: <span style="color:var(--blu)">'+d.live.tennis+'</span>',
@@ -1448,7 +1463,7 @@ async function runDiag(auto=false){
       d.sims.stale_over_6h>0?'  <span style="color:var(--yel)">⚠ '+d.sims.stale_over_6h+' sin resolver >6h · '+d.sims.stale_over_24h+' >24h</span>':'  Sin alertas caducadas ✓',
       '',
       '<strong>Cache:</strong>',
-      '  Odds tenis: '+d.cache.odds_tennis+' · Odds fútbol: '+d.cache.odds_football+' · Alerted keys: '+d.cache.alerted_keys,
+      '  Odds AllSports: '+(d.cache.odds_allsports||d.cache.odds_tennis||0)+' · Odds tennis live: '+(d.cache.odds_tennis_live||0)+' · Fútbol: '+d.cache.odds_football+' · Alerted: '+d.cache.alerted_keys,
     ];
     if(d.sims.stale_details?.length){
       lines.push('','<strong>Alertas >6h sin resolver:</strong>');
