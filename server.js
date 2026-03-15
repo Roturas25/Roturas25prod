@@ -300,6 +300,13 @@ function buildOddsCache(result){
         existing.o2 = o2||null;
         existing.match_o1 = o1||null;
         existing.match_o2 = o2||null;
+        // Set .match = odds for whichever player is in ODD_MIN–ODD_MAX range
+        // If neither is in range, use the lower odd (more likely the favourite)
+        if (o1!=null && o1>=ODD_MIN && o1<=ODD_MAX) existing.match = o1;
+        else if (o2!=null && o2>=ODD_MIN && o2<=ODD_MAX) existing.match = o2;
+        else if (o1!=null && o2!=null) existing.match = Math.min(o1, o2);
+        else existing.match = o1||o2;
+        existing.source = existing.source || 'allsports';
       }
     }
 
@@ -360,11 +367,31 @@ async function fetchTheOddsTennis() {
   trackApiCall('theodds');
   diag.theodds.callCount++;
 
-  // Try generic 'tennis' endpoint first (covers all live ATP/WTA matches)
-  const urlsToTry = [
-    `https://api.the-odds-api.com/v4/sports/tennis/odds/?apiKey=${THEODDS_KEY}&regions=eu&markets=h2h&oddsFormat=decimal`,
-    `https://api.the-odds-api.com/v4/sports/tennis_atp/odds/?apiKey=${THEODDS_KEY}&regions=eu&markets=h2h&oddsFormat=decimal`,
-  ];
+  // TheOdds: discover active tennis sports then query each
+  // We cache the list to avoid repeated /v4/sports calls
+  if (!fetchTheOddsTennis._sportKeys) fetchTheOddsTennis._sportKeys = null;
+  if (!fetchTheOddsTennis._sportsLoadedAt) fetchTheOddsTennis._sportsLoadedAt = 0;
+  
+  const SPORTS_TTL = 6 * 3600 * 1000; // refresh sport keys every 6h
+  if (!fetchTheOddsTennis._sportKeys || (Date.now() - fetchTheOddsTennis._sportsLoadedAt) > SPORTS_TTL) {
+    try {
+      const sportsResp = await fetchJson(`https://api.the-odds-api.com/v4/sports/?apiKey=${THEODDS_KEY}`);
+      if (Array.isArray(sportsResp)) {
+        fetchTheOddsTennis._sportKeys = sportsResp
+          .filter(s => s.key && s.key.includes('tennis') && s.active)
+          .map(s => s.key)
+          .slice(0, 8); // max 8 tennis sport keys
+        fetchTheOddsTennis._sportsLoadedAt = Date.now();
+        trackApiCall('theodds'); // count this call
+        console.log('[THEODDS] Active tennis sports:', fetchTheOddsTennis._sportKeys);
+      }
+    } catch(e) { console.warn('[THEODDS sports]', e.message); }
+  }
+  
+  const sportKeys = fetchTheOddsTennis._sportKeys || ['tennis_atp','tennis_wta','tennis_atp_us_open'];
+  const urlsToTry = sportKeys.map(k =>
+    `https://api.the-odds-api.com/v4/sports/${k}/odds/?apiKey=${THEODDS_KEY}&regions=eu&markets=h2h&oddsFormat=decimal`
+  );
 
   for (const url of urlsToTry) {
     try {
@@ -1215,10 +1242,13 @@ function normT(e){
   // FIX: read live odds (Betfair/oddsapiio) from tennisOddsCache first, fall back to AllSports oddsCache
   const tcLive = tennisOddsCache.get(String(e.event_key)) || {};
   const tcPre  = oddsCache.get(String(e.event_key)) || {};
-  const liveMatch   = tcLive.match   || tcPre.match   || null;
+  // Derive match odd from .match (live/pre), or from o1/o2 if .match is null (pre-match fallback)
+  const preFav = (tcPre.o1!=null&&tcPre.o1>=ODD_MIN&&tcPre.o1<=ODD_MAX) ? tcPre.o1
+               : (tcPre.o2!=null&&tcPre.o2>=ODD_MIN&&tcPre.o2<=ODD_MAX) ? tcPre.o2 : null;
+  const liveMatch   = tcLive.match   || tcPre.match   || preFav || null;
   const liveSet2    = tcLive.set2    || tcPre.set2    || null;
   const liveCurrent = tcLive.current || tcPre.current || null;
-  const oddsSource  = tcLive.source_match || tcPre.source || 'allsports';
+  const oddsSource  = tcLive.source_match || tcPre.source || (preFav ? 'allsports' : null);
   return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
@@ -1537,7 +1567,7 @@ const server=http.createServer((req,res)=>{
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify({
-      ok:true, version:'v14',
+      ok:true, version:'v14f',
       football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
       betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
       oddsapiio: !!ODDS_API_IO_KEY,
@@ -1743,7 +1773,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v14 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v14f — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
