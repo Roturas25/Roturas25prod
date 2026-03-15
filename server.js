@@ -5,16 +5,18 @@ const https = require('https');
 process.on('uncaughtException',  e => console.error('[UNCAUGHT]',  e.message));
 process.on('unhandledRejection', e => console.error('[UNHANDLED]', String(e)));
 
-// ── Credenciales hardcodeadas + override por env ──────────────────────────────
-// FIX BUG 1: keys hardcodeadas como fallback para evitar silencio si Railway no las tiene
-const FOOTBALL_KEY = process.env.FOOTBALL_KEY || '';
-const TENNIS_KEY   = process.env.TENNIS_KEY   || '';
-const THEODDS_KEY  = process.env.THEODDS_KEY  || '';
-const TG_TOKEN     = process.env.TG_TOKEN     || '';
-const TG_CHAT      = process.env.TG_CHAT      || '';
-const PORT         = parseInt(process.env.PORT || '3000', 10);
-const ODD_MIN      = parseFloat(process.env.ODD_MIN || '1.20');
-const ODD_MAX      = parseFloat(process.env.ODD_MAX || '1.60');
+// ── Credenciales — SOLO desde Railway env vars, nunca hardcodeadas ────────────
+const FOOTBALL_KEY     = process.env.FOOTBALL_KEY     || '';
+const TENNIS_KEY       = process.env.TENNIS_KEY       || '';
+const THEODDS_KEY      = process.env.THEODDS_KEY      || '';
+const TG_TOKEN         = process.env.TG_TOKEN         || '';
+const TG_CHAT          = process.env.TG_CHAT          || '';
+const BETFAIR_SSOID    = process.env.BETFAIR_SSOID    || '';  // session token
+const BETFAIR_APP_KEY  = process.env.BETFAIR_APP_KEY  || '';  // delayed key — set in Railway
+const ODDS_API_IO_KEY  = process.env.ODDS_API_IO_KEY  || '';  // odds-api.io key
+const PORT             = parseInt(process.env.PORT || '3000', 10);
+const ODD_MIN          = parseFloat(process.env.ODD_MIN || '1.20');
+const ODD_MAX          = parseFloat(process.env.ODD_MAX || '1.60');
 
 // ── Estado global ─────────────────────────────────────────────────────────────
 const alerted           = new Set();
@@ -25,37 +27,41 @@ let   nextFootball      = [];
 let   lastUpdate        = null;
 const stats             = { pollCount:0, alertsSent:0, errors:0 };
 const simAlerts         = [];
-const oddsCache         = new Map();   // key→{o1,o2,match,set2,current,ft_05,ft_15,updated}
-const footballOddsCache = new Map();   // matchId → {ft05, ft15, updatedAt}
+const oddsCache         = new Map();   // AllSports pre-match: key→{o1,o2,match,set2,current,...}
+const footballOddsCache = new Map();   // matchId → {ft05,ft15,source,updatedAt}
+const tennisOddsCache   = new Map();   // matchKey → {match_o1,match_o2,set2_o1,set2_o2,set_o1,set_o2,source,updatedAt}
 const htSnapshot        = new Map();
 const kickoffSnapshot   = new Map();
 const breakRecoveries   = new Map();
 const surfaceCache      = new Map();
 const nextFootball24    = [];
 
+// Betfair market ID cache: eventKey → { matchOddsId, setWinnerId, ou05Id, ou15Id }
+const betfairMarketIds  = new Map();
+
 // ── Diagnóstico en tiempo real ─────────────────────────────────────────────────
 const diag = {
-  football: { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0 },
-  tennis:   { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0 },
-  odds:     { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0, cacheSize: 0 },
-  theodds:  { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0, cacheSize: 0 },
-  firebase: { lastOk: null, lastErr: null, lastErrMsg: '' },
-  telegram: { lastOk: null, lastErr: null, lastErrMsg: '' },
+  football:  { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0 },
+  tennis:    { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0 },
+  odds:      { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0, cacheSize: 0 },
+  theodds:   { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0, cacheSize: 0 },
+  betfair:   { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0, marketsFound: 0, ssoExpired: false },
+  oddsapiio: { lastOk: null, lastErr: null, lastErrMsg: '', callCount: 0, cacheSize: 0 },
+  firebase:  { lastOk: null, lastErr: null, lastErrMsg: '' },
+  telegram:  { lastOk: null, lastErr: null, lastErrMsg: '' },
   resolution: { pendingTennis: 0, pendingFootball: 0, staleOver6h: 0 },
 };
 
 // ── API usage counters ────────────────────────────────────────────────────────
-// Tracks calls per day with rolling 30-day history
 const apiUsage = {
-  // Limits (free tiers)
   limits: {
     football:  { daily: 10,   monthly: 300,  label: 'football-data.org free' },
     allsports: { daily: 100,  monthly: 3000, label: 'AllSports free' },
-    theodds:   { daily: null, monthly: 500,  label: 'TheOdds free' },
+    theodds:   { daily: null, monthly: 500,  label: 'TheOdds free (500/mo)' },
+    betfair:   { daily: null, monthly: null, label: 'Betfair Exchange (delayed, free)' },
+    oddsapiio: { daily: null, monthly: null, label: 'odds-api.io' },
   },
-  // Rolling counters (reset daily at midnight UTC)
-  today: { football: 0, allsports: 0, theodds: 0, date: '' },
-  // 30-day history [{date, football, allsports, theodds}]
+  today: { football: 0, allsports: 0, theodds: 0, betfair: 0, oddsapiio: 0, date: '' },
   history: [],
   startedAt: new Date().toISOString(),
 };
@@ -63,12 +69,11 @@ const apiUsage = {
 function trackApiCall(api) {
   const today = new Date().toISOString().split('T')[0];
   if (apiUsage.today.date !== today) {
-    // New day — save yesterday to history and reset
     if (apiUsage.today.date) {
       apiUsage.history.push({ ...apiUsage.today });
       if (apiUsage.history.length > 30) apiUsage.history.shift();
     }
-    apiUsage.today = { football: 0, allsports: 0, theodds: 0, date: today };
+    apiUsage.today = { football: 0, allsports: 0, theodds: 0, betfair: 0, oddsapiio: 0, date: today };
   }
   if (api in apiUsage.today) apiUsage.today[api]++;
 }
@@ -79,16 +84,20 @@ function apiUsageSummary() {
   const monthTotal = (key) => apiUsage.history.reduce((s,d) => s + (d[key]||0), 0) + (t[key]||0);
   return {
     today: {
-      football:  { calls: t.football,  limit_daily: lims.football.daily,   pct: lims.football.daily   ? Math.round(t.football  /lims.football.daily  *100) : null },
-      allsports: { calls: t.allsports, limit_daily: lims.allsports.daily,  pct: lims.allsports.daily  ? Math.round(t.allsports /lims.allsports.daily *100) : null },
+      football:  { calls: t.football,  limit_daily: lims.football.daily,  pct: lims.football.daily  ? Math.round(t.football /lims.football.daily *100) : null },
+      allsports: { calls: t.allsports, limit_daily: lims.allsports.daily, pct: lims.allsports.daily ? Math.round(t.allsports/lims.allsports.daily*100) : null },
       theodds:   { calls: t.theodds,   limit_daily: null, pct: null },
+      betfair:   { calls: t.betfair,   limit_daily: null, pct: null },
+      oddsapiio: { calls: t.oddsapiio, limit_daily: null, pct: null },
     },
     month: {
-      football:  { calls: monthTotal('football'),  limit: lims.football.monthly,  pct: Math.round(monthTotal('football') /lims.football.monthly  *100) },
-      allsports: { calls: monthTotal('allsports'), limit: lims.allsports.monthly, pct: Math.round(monthTotal('allsports')/lims.allsports.monthly *100) },
-      theodds:   { calls: monthTotal('theodds'),   limit: lims.theodds.monthly,   pct: Math.round(monthTotal('theodds')  /lims.theodds.monthly   *100) },
+      football:  { calls: monthTotal('football'),  limit: lims.football.monthly,  pct: lims.football.monthly  ? Math.round(monthTotal('football') /lims.football.monthly  *100) : null },
+      allsports: { calls: monthTotal('allsports'), limit: lims.allsports.monthly, pct: lims.allsports.monthly ? Math.round(monthTotal('allsports')/lims.allsports.monthly *100) : null },
+      theodds:   { calls: monthTotal('theodds'),   limit: lims.theodds.monthly,   pct: lims.theodds.monthly   ? Math.round(monthTotal('theodds')  /lims.theodds.monthly   *100) : null },
+      betfair:   { calls: monthTotal('betfair'),   limit: null, pct: null },
+      oddsapiio: { calls: monthTotal('oddsapiio'), limit: null, pct: null },
     },
-    history: apiUsage.history.slice(-7), // last 7 days
+    history: apiUsage.history.slice(-7),
     startedAt: apiUsage.startedAt,
     date: t.date,
   };
@@ -488,6 +497,362 @@ async function fetchTheOddsFootball() {
     }
   }
 }
+
+
+// BETFAIR INTEGRATION START ════════════════════════════════════════════════════
+// Betfair Exchange API — live (delayed 3min with free key) odds for tennis & football
+// NOTE: BETFAIR_SSOID (session token) expires ~12h inactivity — renew via Railway env.
+// Priority: Betfair > odds-api.io > TheOdds > AllSports pre-match
+
+function betfairPost(body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const opts = {
+      hostname: 'api.betfair.com',
+      path: '/exchange/betting/json-rpc/v1',
+      method: 'POST',
+      headers: {
+        'X-Application': BETFAIR_APP_KEY,
+        'X-Authentication': BETFAIR_SSOID,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Accept': 'application/json',
+      },
+    };
+    const req = https.request(opts, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(d)); }
+        catch(e) { reject(new Error('BF JSON: ' + d.slice(0, 100))); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(12000, () => { req.destroy(); reject(new Error('BF timeout')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+function normName(s) {
+  return (s||'').toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+}
+
+function namesMatch(a, b) {
+  const na = normName(a), nb = normName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const la = na.split(' ').pop(), lb = nb.split(' ').pop();
+  if (la.length >= 4 && lb.length >= 4 && la === lb) return true;
+  if (na.length >= 4 && nb.includes(na)) return true;
+  if (nb.length >= 4 && na.includes(nb)) return true;
+  return false;
+}
+
+async function fetchBetfairTennisOdds() {
+  if (!BETFAIR_SSOID || !BETFAIR_APP_KEY) return;
+  const liveTennis = lastTennis.filter(m => !m.isUp);
+  if (!liveTennis.length) return;
+  diag.betfair.callCount++;
+  trackApiCall('betfair');
+  try {
+    const catResp = await betfairPost([{
+      jsonrpc: '2.0', id: 1,
+      method: 'SportsAPING/v1.0/listMarketCatalogue',
+      params: {
+        filter: { eventTypeIds: ['2'], inPlayOnly: true, marketTypeCodes: ['MATCH_ODDS','SET_WINNER'] },
+        marketProjection: ['EVENT','RUNNERS'],
+        maxResults: '200',
+        sort: 'FIRST_TO_START',
+      },
+    }]);
+    if (!catResp?.[0]?.result) {
+      const err = JSON.stringify(catResp?.[0]?.error || '');
+      if (err.includes('INVALID_SESSION') || err.includes('-32000')) {
+        diag.betfair.ssoExpired = true;
+        diag.betfair.lastErrMsg = 'SSOID expired — renew BETFAIR_SSOID in Railway';
+      }
+      return;
+    }
+    diag.betfair.ssoExpired = false;
+    const markets = catResp[0].result;
+    diag.betfair.marketsFound = markets.length;
+
+    const eventMap = new Map();
+    for (const mkt of markets) {
+      const eid = mkt.event?.id; if (!eid) continue;
+      if (!eventMap.has(eid)) {
+        const rn = mkt.runners || [];
+        eventMap.set(eid, { p1: rn[0]?.runnerName||'', p2: rn[1]?.runnerName||'', matchId: null, setIds: [] });
+      }
+      const e = eventMap.get(eid);
+      if (mkt.marketType === 'MATCH_ODDS') e.matchId = mkt.marketId;
+      if (mkt.marketType === 'SET_WINNER') e.setIds.push({ id: mkt.marketId, name: (mkt.marketName||'').toLowerCase() });
+    }
+
+    const matched = [];
+    for (const [, bf] of eventMap) {
+      for (const tm of liveTennis) {
+        if (namesMatch(bf.p1, tm.p1) && namesMatch(bf.p2, tm.p2)) {
+          matched.push({ tm, matchId: bf.matchId, setIds: bf.setIds }); break;
+        }
+      }
+    }
+    if (!matched.length) return;
+
+    const allIds = matched.flatMap(m => [m.matchId, ...m.setIds.map(s=>s.id)].filter(Boolean));
+    const bookResp = await betfairPost([{
+      jsonrpc: '2.0', id: 2,
+      method: 'SportsAPING/v1.0/listMarketBook',
+      params: {
+        marketIds: allIds,
+        priceProjection: { priceData: ['EX_BEST_OFFERS'], exBestOffersOverrides: { bestPricesDepth: 1 } },
+      },
+    }]);
+    if (!bookResp?.[0]?.result) return;
+    const books = new Map(bookResp[0].result.map(b => [b.marketId, b]));
+
+    for (const { tm, matchId, setIds } of matched) {
+      const favIs = (tm.o1 >= ODD_MIN && tm.o1 <= ODD_MAX) ? 'p1' : 'p2';
+      const tc = tennisOddsCache.get(tm._key) || {};
+
+      if (matchId && books.has(matchId)) {
+        const rn = books.get(matchId).runners || [];
+        const r0 = rn[0]?.ex?.availableToBack?.[0]?.price;
+        const r1 = rn[1]?.ex?.availableToBack?.[0]?.price;
+        if (r0 || r1) {
+          tc.match_o1 = r0||null; tc.match_o2 = r1||null;
+          tc.match = favIs==='p1'?r0:r1; tc.source_match = 'betfair';
+        }
+      }
+      for (const sw of setIds) {
+        if (!books.has(sw.id)) continue;
+        const rn = books.get(sw.id).runners || [];
+        const r0 = rn[0]?.ex?.availableToBack?.[0]?.price;
+        const r1 = rn[1]?.ex?.availableToBack?.[0]?.price;
+        if (!r0 && !r1) continue;
+        if (sw.name.includes('set ' + tm.curSetNum) || sw.name.includes('set' + tm.curSetNum)) {
+          tc.current_o1=r0||null; tc.current_o2=r1||null;
+          tc.current=favIs==='p1'?r0:r1; tc.source_current='betfair';
+        }
+        if (sw.name.includes('set 2') || sw.name.includes('set2')) {
+          tc.set2_o1=r0||null; tc.set2_o2=r1||null;
+          tc.set2=favIs==='p1'?r0:r1; tc.source_set2='betfair';
+        }
+      }
+      tc.updatedAt = Date.now();
+      tennisOddsCache.set(tm._key, tc);
+      // Mirror into oddsCache so normT() picks it up without changes
+      const oc = oddsCache.get(tm._key) || {};
+      if (tc.match)   { oc.match   = tc.match;   oc.source = 'betfair'; }
+      if (tc.set2)    { oc.set2    = tc.set2; }
+      if (tc.current) { oc.current = tc.current; }
+      oc.match_o1 = tc.match_o1; oc.match_o2 = tc.match_o2;
+      oddsCache.set(tm._key, oc);
+    }
+    diag.betfair.lastOk = nowISO();
+    console.log('[BETFAIR TENNIS] updated', matched.length, 'matches');
+  } catch(e) {
+    diag.betfair.lastErr = nowISO(); diag.betfair.lastErrMsg = e.message;
+    console.warn('[BETFAIR TENNIS]', e.message);
+  }
+}
+
+async function fetchBetfairFootballOdds() {
+  if (!BETFAIR_SSOID || !BETFAIR_APP_KEY) return;
+  const liveF = lastFootball.filter(m => m.status==='IN_PLAY'||m.status==='PAUSED');
+  if (!liveF.length) return;
+  diag.betfair.callCount++;
+  trackApiCall('betfair');
+  try {
+    const catResp = await betfairPost([{
+      jsonrpc: '2.0', id: 3,
+      method: 'SportsAPING/v1.0/listMarketCatalogue',
+      params: {
+        filter: { eventTypeIds: ['1'], inPlayOnly: true, marketTypeCodes: ['OVER_UNDER_05','OVER_UNDER_15'] },
+        marketProjection: ['EVENT','RUNNERS'],
+        maxResults: '100', sort: 'FIRST_TO_START',
+      },
+    }]);
+    if (!catResp?.[0]?.result) return;
+    const markets = catResp[0].result;
+    const eventMap = new Map();
+    for (const mkt of markets) {
+      const eid = mkt.event?.id; if (!eid) continue;
+      if (!eventMap.has(eid)) eventMap.set(eid, { name: mkt.event?.name||'', ou05Id: null, ou15Id: null });
+      const e = eventMap.get(eid);
+      if (mkt.marketType === 'OVER_UNDER_05') e.ou05Id = mkt.marketId;
+      if (mkt.marketType === 'OVER_UNDER_15') e.ou15Id = mkt.marketId;
+    }
+    const matched = [];
+    for (const [, bf] of eventMap) {
+      const parts = bf.name.split(' v ');
+      const bfH = parts[0]?.trim()||'', bfA = parts[1]?.trim()||'';
+      const fm = liveF.find(f => namesMatch(bfH,f.h) && namesMatch(bfA,f.a));
+      if (fm) matched.push({ fm, ou05Id: bf.ou05Id, ou15Id: bf.ou15Id });
+    }
+    if (!matched.length) return;
+    const allIds = matched.flatMap(m => [m.ou05Id,m.ou15Id].filter(Boolean));
+    const bookResp = await betfairPost([{
+      jsonrpc: '2.0', id: 4,
+      method: 'SportsAPING/v1.0/listMarketBook',
+      params: {
+        marketIds: allIds,
+        priceProjection: { priceData: ['EX_BEST_OFFERS'], exBestOffersOverrides: { bestPricesDepth: 1 } },
+      },
+    }]);
+    if (!bookResp?.[0]?.result) return;
+    const books = new Map(bookResp[0].result.map(b => [b.marketId, b]));
+    for (const { fm, ou05Id, ou15Id } of matched) {
+      const fc = footballOddsCache.get(fm.id) || {};
+      const getOver = (mktId) => {
+        if (!mktId || !books.has(mktId)) return null;
+        const rn = books.get(mktId).runners || [];
+        const over = rn.find(r => (r.runnerName||'').toLowerCase().includes('over') || r.sortPriority===1);
+        return over?.ex?.availableToBack?.[0]?.price || null;
+      };
+      const p05 = getOver(ou05Id), p15 = getOver(ou15Id);
+      if (p05) { fc.ft05 = p05; fc.source_ft05 = 'betfair'; }
+      if (p15) { fc.ft15 = p15; fc.source_ft15 = 'betfair'; }
+      if (p05 || p15) { fc.updatedAt = Date.now(); footballOddsCache.set(fm.id, fc); }
+    }
+    diag.betfair.lastOk = nowISO();
+    console.log('[BETFAIR FOOTBALL] updated', matched.length, 'matches');
+  } catch(e) {
+    diag.betfair.lastErr = nowISO(); diag.betfair.lastErrMsg = e.message;
+    console.warn('[BETFAIR FOOTBALL]', e.message);
+  }
+}
+
+async function fetchBetfairOdds() {
+  await Promise.allSettled([fetchBetfairTennisOdds(), fetchBetfairFootballOdds()]);
+}
+// BETFAIR INTEGRATION END ══════════════════════════════════════════════════════
+
+// FALLBACK ODDS API START ══════════════════════════════════════════════════════
+// odds-api.io — fallback when Betfair has no market (ITF/Challenger tennis, etc.)
+
+async function fetchOddsApiIoTennis() {
+  if (!ODDS_API_IO_KEY) return;
+  const live = lastTennis.filter(m => !m.isUp);
+  if (!live.length) return;
+  const needsFallback = live.filter(m => {
+    const tc = tennisOddsCache.get(m._key);
+    return !tc || !tc.match || tc.source_match !== 'betfair';
+  });
+  if (!needsFallback.length) return;
+  diag.oddsapiio.callCount++;
+  trackApiCall('oddsapiio');
+  try {
+    const url = 'https://odds-api.io/api/odds?sport=tennis&market=h2h&apikey=' + ODDS_API_IO_KEY;
+    const r = await fetchJson(url);
+    const events = Array.isArray(r) ? r : (r.data || r.events || r.results || []);
+    for (const ev of events) {
+      const homeLC = (ev.home_team||ev.homeTeam||ev.player1||'').toLowerCase();
+      const awayLC = (ev.away_team||ev.awayTeam||ev.player2||'').toLowerCase();
+      const tm = needsFallback.find(m => namesMatch(homeLC,m.p1) && namesMatch(awayLC,m.p2));
+      if (!tm) continue;
+      const favIs = (tm.o1>=ODD_MIN&&tm.o1<=ODD_MAX)?'p1':'p2';
+      let homeOdd=null, awayOdd=null;
+      for (const bk of (ev.bookmakers||ev.sportsbooks||[])) {
+        for (const mkt of (bk.markets||bk.odds||[])) {
+          const key=(mkt.key||mkt.market||'').toLowerCase();
+          if (!['h2h','match_winner','moneyline','winner'].includes(key)) continue;
+          for (const oc of (mkt.outcomes||mkt.selections||[])) {
+            const name=(oc.name||oc.label||'').toLowerCase();
+            const price=parseFloat(oc.price||oc.odd||oc.odds||0);
+            if (price>1.01) {
+              if (homeOdd===null && (namesMatch(name,tm.p1)||name==='home'||name==='1')) homeOdd=price;
+              if (awayOdd===null && (namesMatch(name,tm.p2)||name==='away'||name==='2')) awayOdd=price;
+            }
+          }
+          if (homeOdd||awayOdd) break;
+        }
+        if (homeOdd||awayOdd) break;
+      }
+      if (homeOdd||awayOdd) {
+        const tc = tennisOddsCache.get(tm._key) || {};
+        if (!tc.match || tc.source_match!=='betfair') {
+          tc.match_o1=homeOdd; tc.match_o2=awayOdd;
+          tc.match=favIs==='p1'?homeOdd:awayOdd; tc.source_match='oddsapiio';
+          tc.updatedAt=Date.now(); tennisOddsCache.set(tm._key,tc);
+          const oc=oddsCache.get(tm._key)||{};
+          if (!oc.match||oc.source!=='betfair') {
+            oc.match=tc.match; oc.match_o1=homeOdd; oc.match_o2=awayOdd; oc.source='oddsapiio';
+            oddsCache.set(tm._key,oc);
+          }
+        }
+      }
+    }
+    diag.oddsapiio.lastOk=nowISO(); diag.oddsapiio.cacheSize=tennisOddsCache.size;
+  } catch(e) {
+    diag.oddsapiio.lastErr=nowISO(); diag.oddsapiio.lastErrMsg=e.message;
+    console.warn('[ODDSAPIIO TENNIS]',e.message);
+  }
+}
+
+async function fetchOddsApiIoFootball() {
+  if (!ODDS_API_IO_KEY) return;
+  const liveF = lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED');
+  if (!liveF.length) return;
+  const needsFallback = liveF.filter(m => {
+    const fc=footballOddsCache.get(m.id);
+    return !fc||(!fc.ft05&&!fc.ft15)||fc.source_ft05!=='betfair';
+  });
+  if (!needsFallback.length) return;
+  diag.oddsapiio.callCount++;
+  trackApiCall('oddsapiio');
+  try {
+    const url='https://odds-api.io/api/odds?sport=soccer&market=totals&apikey='+ODDS_API_IO_KEY;
+    const r=await fetchJson(url);
+    const events=Array.isArray(r)?r:(r.data||r.events||r.results||[]);
+    for (const ev of events) {
+      const homeLC=(ev.home_team||ev.homeTeam||'').toLowerCase();
+      const awayLC=(ev.away_team||ev.awayTeam||'').toLowerCase();
+      const fm=needsFallback.find(m=>namesMatch(homeLC,m.h)&&namesMatch(awayLC,m.a));
+      if (!fm) continue;
+      let ft05=null,ft15=null;
+      for (const bk of (ev.bookmakers||ev.sportsbooks||[])) {
+        for (const mkt of (bk.markets||bk.odds||[])) {
+          const key=(mkt.key||mkt.market||'').toLowerCase();
+          if (!['totals','over_under','goals','total'].includes(key)) continue;
+          for (const oc of (mkt.outcomes||mkt.selections||[])) {
+            const name=(oc.name||oc.label||'').toLowerCase();
+            const pt=parseFloat(oc.point||oc.line||oc.handicap||0);
+            const pr=parseFloat(oc.price||oc.odd||oc.odds||0);
+            if (pr>1.01&&name.includes('over')) {
+              if (Math.abs(pt-0.5)<0.01&&!ft05) ft05=pr;
+              if (Math.abs(pt-1.5)<0.01&&!ft15) ft15=pr;
+            }
+          }
+        }
+        if (ft05||ft15) break;
+      }
+      if (ft05||ft15) {
+        const fc=footballOddsCache.get(fm.id)||{};
+        if (!fc.source_ft05||fc.source_ft05!=='betfair') {
+          if (ft05){fc.ft05=ft05;fc.source_ft05='oddsapiio';}
+          if (ft15){fc.ft15=ft15;fc.source_ft15='oddsapiio';}
+          fc.updatedAt=Date.now(); footballOddsCache.set(fm.id,fc);
+        }
+      }
+    }
+    diag.oddsapiio.lastOk=nowISO();
+  } catch(e) {
+    diag.oddsapiio.lastErr=nowISO(); diag.oddsapiio.lastErrMsg=e.message;
+    console.warn('[ODDSAPIIO FOOTBALL]',e.message);
+  }
+}
+
+// fetchFallbackOdds — fills gaps after Betfair poll
+async function fetchFallbackOdds() {
+  await Promise.allSettled([
+    fetchOddsApiIoTennis(),
+    fetchOddsApiIoFootball(),
+    fetchTheOddsFootball(),
+  ]);
+}
+// FALLBACK ODDS API END ════════════════════════════════════════════════════════
 
 // ── AllSports Football Livescore — para minuto real ───────────────────────────
 // FIX BUG 2: football-data.org no da minuto real → usar allsports como complemento
@@ -1000,19 +1365,26 @@ async function poll(){
 
 // ── Bucles independientes ─────────────────────────────────────────────────────
 function startOddsPoll() {
-  const run = async () => {
+  // AllSports live odds — every 15s
+  const runAllSports = async () => {
     try { await pollOdds(); } catch(e) { console.warn('[ODDS POLL]', e.message); }
-    setTimeout(run, 15000);
+    setTimeout(runAllSports, 15000);
   };
-  setTimeout(run, 10000);
-}
+  setTimeout(runAllSports, 10000);
 
-function startTheOddsPoll() {
-  const run = async () => {
-    try { await fetchTheOddsFootball(); } catch(e) { console.warn('[THEODDS]', e.message); }
-    setTimeout(run, 5 * 60 * 1000); // cada 5 min
+  // Betfair live odds — every 10s (primary source)
+  const runBetfair = async () => {
+    try { await fetchBetfairOdds(); } catch(e) { console.warn('[BETFAIR POLL]', e.message); }
+    setTimeout(runBetfair, 10000);
   };
-  setTimeout(run, 15000);
+  setTimeout(runBetfair, 8000);
+
+  // Fallback odds (odds-api.io + TheOdds) — every 60s
+  const runFallback = async () => {
+    try { await fetchFallbackOdds(); } catch(e) { console.warn('[FALLBACK ODDS]', e.message); }
+    setTimeout(runFallback, 60000);
+  };
+  setTimeout(runFallback, 20000);
 }
 
 function startAllSportsFootballPoll() {
@@ -1063,7 +1435,18 @@ const server=http.createServer((req,res)=>{
 
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
-    res.end(JSON.stringify({ok:true,version:'v11',football:!!FOOTBALL_KEY,tennis:!!TENNIS_KEY,theodds:!!THEODDS_KEY,telegram:!!TG_TOKEN,oddMin:ODD_MIN,oddMax:ODD_MAX,updated:lastUpdate,stats,liveFootball:lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED').length,liveTennis:lastTennis.filter(m=>!m.isUp).length,oddsCache:oddsCache.size,fbOddsCache:footballOddsCache.size,simCount:simAlerts.length}));
+    res.end(JSON.stringify({
+      ok:true, version:'v12',
+      football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
+      betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
+      oddsapiio: !!ODDS_API_IO_KEY,
+      telegram:!!TG_TOKEN,
+      oddMin:ODD_MIN, oddMax:ODD_MAX, updated:lastUpdate, stats,
+      liveFootball:lastFootball.filter(m=>m.status==='IN_PLAY'||m.status==='PAUSED').length,
+      liveTennis:lastTennis.filter(m=>!m.isUp).length,
+      oddsCache:oddsCache.size, tennisOddsCache:tennisOddsCache.size,
+      fbOddsCache:footballOddsCache.size, simCount:simAlerts.length,
+    }));
     return;
   }
 
@@ -1086,6 +1469,7 @@ const server=http.createServer((req,res)=>{
       oddStats,catStats,ftStats,
       odds:Object.fromEntries(oddsCache),
       footballOdds:Object.fromEntries(footballOddsCache),
+      tennisOdds:Object.fromEntries(tennisOddsCache),
     }));
     return;
   }
@@ -1102,15 +1486,17 @@ const server=http.createServer((req,res)=>{
     const stale24h = simAlerts.filter(s=>!s.resolved&&(now-new Date(s.alertedAt).getTime())>24*3600000);
     res.writeHead(200);
     res.end(JSON.stringify({
-      version: 'v11',
+      version: 'v12',
       uptime: Math.floor(process.uptime()),
       apis: {
-        football: { key: FOOTBALL_KEY ? '✓' : '✗ MISSING', ...diag.football },
-        tennis:   { key: TENNIS_KEY   ? '✓' : '✗ MISSING', ...diag.tennis   },
-        odds:     { key: TENNIS_KEY   ? '✓' : '✗ MISSING', ...diag.odds     },
-        theodds:  { key: THEODDS_KEY  ? '✓' : '✗ MISSING', ...diag.theodds  },
-        firebase: diag.firebase,
-        telegram: diag.telegram,
+        football:  { key: FOOTBALL_KEY  ? '✓' : '✗ MISSING', ...diag.football  },
+        tennis:    { key: TENNIS_KEY    ? '✓' : '✗ MISSING', ...diag.tennis    },
+        odds:      { key: TENNIS_KEY    ? '✓' : '✗ MISSING', ...diag.odds      },
+        theodds:   { key: THEODDS_KEY   ? '✓' : '✗ MISSING', ...diag.theodds   },
+        betfair:   { key: BETFAIR_SSOID ? (diag.betfair.ssoExpired?'⚠ SSO_EXPIRED':'✓') : '✗ MISSING', ...diag.betfair },
+        oddsapiio: { key: ODDS_API_IO_KEY?'✓':'✗ MISSING', ...diag.oddsapiio },
+        firebase:  diag.firebase,
+        telegram:  diag.telegram,
       },
       live: {
         tennis: lastTennis.filter(m=>!m.isUp).length,
@@ -1126,20 +1512,30 @@ const server=http.createServer((req,res)=>{
         stale_details: stale6h.slice(0,5).map(s=>({id:s.id,match:s.match,type:s.type,alertedAt:s.alertedAt})),
       },
       cache: {
-        odds_tennis: oddsCache.size,
+        odds_allsports: oddsCache.size,
+        odds_tennis_live: tennisOddsCache.size,
         odds_football: footballOddsCache.size,
         alerted_keys: alerted.size,
         surface_cache: surfaceCache.size,
+        betfair_markets: betfairMarketIds.size,
+      },
+      odds_sources: {
+        tennis_betfair: [...tennisOddsCache.values()].filter(v=>v.source_match==='betfair').length,
+        tennis_oddsapiio: [...tennisOddsCache.values()].filter(v=>v.source_match==='oddsapiio').length,
+        tennis_allsports: [...tennisOddsCache.values()].filter(v=>!v.source_match||v.source_match==='allsports').length,
+        football_betfair: [...footballOddsCache.values()].filter(v=>v.source_ft05==='betfair').length,
+        football_oddsapiio: [...footballOddsCache.values()].filter(v=>v.source_ft05==='oddsapiio').length,
+        football_theodds: [...footballOddsCache.values()].filter(v=>v.source_ft05==='theodds'||(!v.source_ft05&&(v.ft05||v.ft15))).length,
       },
       apiUsage: apiUsageSummary(),
       config: { ODD_MIN, ODD_MAX },
       prompts: {
-        football_not_showing: 'Los partidos de fútbol no aparecen. Comprueba FOOTBALL_KEY en Railway y que hay partidos LaLiga/Premier hoy.',
-        odds_not_updating: 'Las cuotas no se actualizan. Comprueba TENNIS_KEY en Railway. El endpoint /diagnostics muestra diag.odds.lastOk.',
-        tennis_stalling: 'El tenis se congela cuando AllSports deja de incluir pointbypoint[]. El servidor reintentará en el siguiente poll.',
-        sims_not_resolving: 'Simulations sin resolver: el servidor necesita ver el partido acabado (status=FINISHED). Si lleva >6h sin resolver, usa el botón de resolución manual en el frontend.',
-        how_to_reset: 'POST /reset para limpiar estado del servidor. El frontend tiene botón en Config.',
-        api_quota_warning: 'Si allsports está al 80%+ del límite diario, reducir la frecuencia de pollOdds de 15s a 30s.',
+        football_not_showing: 'Fútbol no aparece. Comprueba FOOTBALL_KEY en Railway.',
+        odds_not_updating: 'Cuotas no actualizan. Betfair: comprueba BETFAIR_SSOID (expira ~12h). OddsApiIo: comprueba ODDS_API_IO_KEY.',
+        betfair_sso_expired: 'BETFAIR_SSOID expirado. Ve a betfair.com, inicia sesión, copia el SSOID de las cookies y actualiza en Railway.',
+        tennis_stalling: 'Tenis se congela cuando AllSports no devuelve pointbypoint[]. El servidor reintentará.',
+        sims_not_resolving: 'Sims sin resolver >6h. Usa /reset o el botón de Config.',
+        how_to_reset: 'POST /reset limpia estado. El frontend tiene botón en Config.',
       }
     }));
     return;
@@ -1156,6 +1552,8 @@ const server=http.createServer((req,res)=>{
     simAlerts.length=0;
     oddsCache.clear();
     footballOddsCache.clear();
+    tennisOddsCache.clear();
+    betfairMarketIds.clear();
     allSportsLiveMinutes.clear();
     (async()=>{
       try{
@@ -1191,14 +1589,13 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v11 — puerto ${PORT}`);
-  console.log(`   Football:${FOOTBALL_KEY?'✓':'✗ falta FOOTBALL_KEY'}  Tennis:${TENNIS_KEY?'✓':'✗ falta TENNIS_KEY'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
+  console.log(`\n🎾 ROTURAS25 v12 — puerto ${PORT}`);
+  console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
   await loadStateFromFB();
   poll();
-  startOddsPoll();
-  startTheOddsPoll();
+  startOddsPoll();          // AllSports 15s + Betfair 10s + fallback 60s
   startAllSportsFootballPoll();
   startNext24Poll();
 });
