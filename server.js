@@ -1567,7 +1567,7 @@ const server=http.createServer((req,res)=>{
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify({
-      ok:true, version:'v14f',
+      ok:true, version:'v15',
       football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
       betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
       oddsapiio: !!ODDS_API_IO_KEY,
@@ -1715,6 +1715,15 @@ const server=http.createServer((req,res)=>{
         last_err_msg: diag.oddsapiio.lastErrMsg,
         call_count: diag.oddsapiio.callCount,
       },
+      theodds_status: {
+        key_set: !!THEODDS_KEY,
+        last_ok: diag.theodds.lastOk,
+        last_err: diag.theodds.lastErr,
+        last_err_msg: diag.theodds.lastErrMsg,
+        call_count: diag.theodds.callCount,
+        tennis_cache: tennisOddsCache.size,
+        football_cache: footballOddsCache.size,
+      },
       live_tennis_count: liveTennis.length,
       live_football_count: liveFootball.length,
       tennis_odds_cache_size: tennisOddsCache.size,
@@ -1773,7 +1782,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v14f — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v15 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
