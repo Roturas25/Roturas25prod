@@ -1170,8 +1170,13 @@ function tCardHtml(m){
   const ptCell2=hasPt?'<div class="tset tset-pt">'+(m.pt2||'0')+'</div>':'';
   const r1=setsR1+gCell1+ptCell1;
   const r2=setsR2+gCell2+ptCell2;
-  const o1d=m.o1!=null?'<div class="todds '+(m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'fav':'')+'">'+m.o1+'x</div>':'';
-  const o2d=m.o2!=null?'<div class="todds '+(m.o2>=ODD_MIN&&m.o2<=ODD_MAX?'fav':'')+'">'+m.o2+'x</div>':'';
+  const _liveO1d = (m.odds_source&&m.odds_source!=='allsports'&&m.odds_match&&m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX) ? m.odds_match : null;
+  const _liveO2d = (m.odds_source&&m.odds_source!=='allsports'&&m.odds_match&&m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX) ? m.odds_match : null;
+  const _liveTag = '<sup style="font-size:7px;color:#6ec6ff;margin-left:1px;font-weight:700">◉</sup>';
+  const o1d=m.o1!=null?'<div class="todds '+(m.o1>=ODD_MIN&&m.o1<=ODD_MAX?'fav':'')+'">'
+    +(_liveO1d?(_liveO1d.toFixed(2)+_liveTag):m.o1+'x')+'</div>':'';
+  const o2d=m.o2!=null?'<div class="todds '+(m.o2>=ODD_MIN&&m.o2<=ODD_MAX?'fav':'')+'">'
+    +(_liveO2d?(_liveO2d.toFixed(2)+_liveTag):m.o2+'x')+'</div>':'';
   const monB=m.mon?'<span class="tc-mon yes">🟡 MONIT.</span>':'';
   const tk=m.cat==='itf_m'?'tennis_itf_m':m.cat==='itf_f'?'tennis_itf_f':m.cat==='wta125'?'tennis_wta125':m.cat==='wta'?'tennis_wta':m.cat==='challenger'?'tennis_ch':'tennis_atp';
   const cl=m.cat==='wta125'?'WTA 125':m.cat==='itf_m'?'ITF-M':m.cat==='itf_f'?'ITF-F':m.cat.toUpperCase();
