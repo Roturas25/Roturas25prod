@@ -753,9 +753,10 @@ TENNIS_KEY   = tu_key_allsportsapi.com</span></span></div>
       </select>
     </div>
   </div>
-  <div class="mbtns">
-    <button class="mbtns2" onclick="closeModal()">Cancelar</button>
-    <button class="mbtnp" id="mbtnSave" onclick="saveBet()">Guardar apuesta</button>
+  <div class="mbtns" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <button class="mbtns2" onclick="dismissCurrentAlert()" style="font-size:11px;padding:10px 6px">👁 Ignorar esta</button>
+    <button class="mbtns2" onclick="dismissAllAlerts();closeModal()" style="font-size:11px;padding:10px 6px;color:var(--yel)">👁 Ignorar todas</button>
+    <button class="mbtnp" id="mbtnSave" onclick="saveBet()" style="grid-column:1/-1">Guardar apuesta</button>
   </div>
 </div></div>
 
@@ -1144,6 +1145,7 @@ function renderTennis(){
   el.innerHTML=flt.map(m=>tCardHtml(m)).join('');
 }
 function tCardHtml(m){
+  const ODD_MIN=parseFloat($i('cfgMin')?.value||'1.20'),ODD_MAX=parseFloat($i('cfgMax')?.value||'1.60');
   const stk=$i('cfgST').value||'50',iA=isAlert(m);
   let fIs=null,fN=null,fO=null;
   if(m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX){fIs='First Player';fN=m.p1;fO=m.o1;}
@@ -1173,7 +1175,6 @@ function tCardHtml(m){
   const monB=m.mon?'<span class="tc-mon yes">🟡 MONIT.</span>':'';
   const tk=m.cat==='itf_m'?'tennis_itf_m':m.cat==='itf_f'?'tennis_itf_f':m.cat==='wta125'?'tennis_wta125':m.cat==='wta'?'tennis_wta':m.cat==='challenger'?'tennis_ch':'tennis_atp';
   const cl=m.cat==='wta125'?'WTA 125':m.cat==='itf_m'?'ITF-M':m.cat==='itf_f'?'ITF-F':m.cat.toUpperCase();
-  const ODD_MIN=1.20,ODD_MAX=1.60;
   const favO = (m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX) ? m.o1 : (m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX) ? m.o2 : null;
   const favName = favO===m.o1 ? m.p1 : m.p2;
   // Cuota match: live si disponible (theodds/betfair), sino pre-match allsports
@@ -1423,6 +1424,17 @@ function dismissAllAlerts(){
   if(qBadge) qBadge.style.display='none';
   renderAll();
   toast('Alertas ignoradas',active.length+' alertas descartadas. No se registrará ninguna apuesta.');
+}
+
+// Ignorar SOLO la alerta actual del modal
+function dismissCurrentAlert(){
+  if(!autoModalData) { closeModal(); return; }
+  registeredAlerts.add(autoModalData.id);
+  lss('r25_regAlerts',[...registeredAlerts].slice(-500));
+  closeModal();
+  // Process next in queue
+  setTimeout(processAlertQueue, 300);
+  toast('Alerta ignorada', autoModalData.match + ' — descartada.');
 }
 
 // ── Reset completo servidor + local ──────────────────────────────────────────
