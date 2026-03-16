@@ -367,104 +367,149 @@ async function fetchTheOddsTennis() {
   trackApiCall('theodds');
   diag.theodds.callCount++;
 
-  // TheOdds: discover active tennis sports then query each
-  // We cache the list to avoid repeated /v4/sports calls
-  if (!fetchTheOddsTennis._sportKeys) fetchTheOddsTennis._sportKeys = null;
-  if (!fetchTheOddsTennis._sportsLoadedAt) fetchTheOddsTennis._sportsLoadedAt = 0;
-  
-  const SPORTS_TTL = 6 * 3600 * 1000; // refresh sport keys every 6h
-  if (!fetchTheOddsTennis._sportKeys || (Date.now() - fetchTheOddsTennis._sportsLoadedAt) > SPORTS_TTL) {
+  // APPROACH: Fetch from KNOWN active sport keys for current tournaments
+  // Plus a discovery call that gets ALL tennis sport keys (not just s.active ones)
+  // BUG FIX: previously used s.active filter which returned [] for in-play-only events
+  // and [] is truthy so fallback never triggered
+
+  // Step 1: ensure we have sport keys (refresh every 2h, no active filter)
+  const SPORTS_TTL = 2 * 3600 * 1000;
+  if (!fetchTheOddsTennis._keys || !fetchTheOddsTennis._loadedAt ||
+      (Date.now() - fetchTheOddsTennis._loadedAt) > SPORTS_TTL) {
     try {
-      const sportsResp = await fetchJson(`https://api.the-odds-api.com/v4/sports/?apiKey=${THEODDS_KEY}`);
+      const sportsResp = await fetchJson(
+        `https://api.the-odds-api.com/v4/sports/?apiKey=${THEODDS_KEY}&all=true`
+      );
+      trackApiCall('theodds');
       if (Array.isArray(sportsResp)) {
-        fetchTheOddsTennis._sportKeys = sportsResp
-          .filter(s => s.key && s.key.includes('tennis') && s.active)
-          .map(s => s.key)
-          .slice(0, 8); // max 8 tennis sport keys
-        fetchTheOddsTennis._sportsLoadedAt = Date.now();
-        trackApiCall('theodds'); // count this call
-        console.log('[THEODDS] Active tennis sports:', fetchTheOddsTennis._sportKeys);
+        const tennisKeys = sportsResp
+          .filter(s => s.key && s.key.includes('tennis'))
+          .map(s => s.key);
+        // Only update if we got results; keep old keys if empty
+        if (tennisKeys.length > 0) {
+          fetchTheOddsTennis._keys = tennisKeys;
+          fetchTheOddsTennis._loadedAt = Date.now();
+          console.log('[THEODDS] Tennis sports found:', tennisKeys.length, tennisKeys.slice(0,6));
+        }
       }
-    } catch(e) { console.warn('[THEODDS sports]', e.message); }
+    } catch(e) {
+      console.warn('[THEODDS sports discovery]', e.message);
+    }
   }
+
+  // Step 2: build URL list — known current tournament keys + discovered keys
+  // These are the most likely keys for March 2026 (Miami Open season)
+  const KNOWN_TENNIS_KEYS = [
+    'tennis_wta_miami_open',
+    'tennis_atp_miami_open',
+    'tennis_wta_indian_wells',
+    'tennis_atp_indian_wells',
+    'tennis_wta',
+    'tennis_atp',
+    'tennis_atp_challenger',
+    'tennis_wta_125k',
+    'tennis',
+  ];
+
+  // Merge discovered + known, deduplicate, cap at 10
+  const discoveredKeys = (fetchTheOddsTennis._keys && fetchTheOddsTennis._keys.length > 0)
+    ? fetchTheOddsTennis._keys
+    : [];
+  const allKeys = [...new Set([...discoveredKeys, ...KNOWN_TENNIS_KEYS])].slice(0, 10);
   
-  const sportKeys = fetchTheOddsTennis._sportKeys || ['tennis_atp','tennis_wta','tennis_atp_us_open'];
-  const urlsToTry = sportKeys.map(k =>
-    `https://api.the-odds-api.com/v4/sports/${k}/odds/?apiKey=${THEODDS_KEY}&regions=eu&markets=h2h&oddsFormat=decimal`
-  );
+  console.log('[THEODDS] Querying', allKeys.length, 'tennis sport keys');
 
-  for (const url of urlsToTry) {
+  let totalMatched = 0;
+
+  for (const key of allKeys) {
     try {
+      const url = `https://api.the-odds-api.com/v4/sports/${key}/odds/?apiKey=${THEODDS_KEY}&regions=eu&markets=h2h&oddsFormat=decimal`;
       const r = await fetchJson(url);
-      if (!Array.isArray(r) || r.length === 0) continue;
+      
+      if (!Array.isArray(r)) continue;
+      if (r.length === 0) continue;
 
-      let matched = 0;
+      console.log(`[THEODDS] ${key}: ${r.length} events`);
+
       for (const ev of r) {
         const homeLC = (ev.home_team||'').toLowerCase();
         const awayLC = (ev.away_team||'').toLowerCase();
 
+        // Match against live tennis matches
         const tm = liveTennis.find(m =>
           (namesMatch(homeLC, m.p1) && namesMatch(awayLC, m.p2)) ||
           (namesMatch(homeLC, m.p2) && namesMatch(awayLC, m.p1))
         );
         if (!tm) continue;
 
-        const swapped = namesMatch(homeLC, tm.p2); // if p2 is home in TheOdds
-        const favIs = (tm.o1 >= ODD_MIN && tm.o1 <= ODD_MAX) ? 'p1' : 'p2';
+        const swapped = namesMatch(homeLC, tm.p2);
+        const favIs = (tm.o1!=null && tm.o1 >= ODD_MIN && tm.o1 <= ODD_MAX) ? 'p1' : 'p2';
 
-        let o1 = null, o2 = null;
-        for (const bk of (ev.bookmakers||[])) {
-          for (const mkt of (bk.markets||[])) {
+        // Extract h2h odds
+        let p1Odd = null, p2Odd = null;
+        for (const bk of (ev.bookmakers || [])) {
+          for (const mkt of (bk.markets || [])) {
             if (mkt.key !== 'h2h') continue;
-            for (const oc of (mkt.outcomes||[])) {
+            for (const oc of (mkt.outcomes || [])) {
               const pr = parseFloat(oc.price);
               if (!isNaN(pr) && pr > 1.01) {
-                if (namesMatch((oc.name||'').toLowerCase(), swapped ? tm.p2 : tm.p1)) o1 = pr;
-                if (namesMatch((oc.name||'').toLowerCase(), swapped ? tm.p1 : tm.p2)) o2 = pr;
+                // Outcome name is the player's full name
+                const ocName = (oc.name||'').toLowerCase();
+                const p1Name = swapped ? tm.p2 : tm.p1;
+                const p2Name = swapped ? tm.p1 : tm.p2;
+                if (namesMatch(ocName, p1Name)) p1Odd = pr;
+                else if (namesMatch(ocName, p2Name)) p2Odd = pr;
               }
             }
-            if (o1 || o2) break;
+            if (p1Odd && p2Odd) break;
           }
-          if (o1 || o2) break;
+          if (p1Odd && p2Odd) break;
         }
 
-        if (o1 || o2) {
+        if (p1Odd || p2Odd) {
+          const favOdd = favIs === 'p1' ? p1Odd : p2Odd;
           const tc = tennisOddsCache.get(tm._key) || {};
-          // Only overwrite if not fresh Betfair data
-          const LIVE_TTL = 5 * 60 * 1000;
-          const hasFreshBetfair = tc.source_match === 'betfair' && tc.updatedAt && (Date.now()-tc.updatedAt) < LIVE_TTL;
-          if (!hasFreshBetfair) {
-            tc.match_o1 = o1; tc.match_o2 = o2;
-            tc.match = favIs === 'p1' ? o1 : o2;
-            tc.source_match = 'theodds';
-            tc.updatedAt = Date.now();
-            tennisOddsCache.set(tm._key, tc);
-            // Mirror to oddsCache
-            const oc2 = oddsCache.get(tm._key) || {};
-            if (!oc2.source || oc2.source !== 'betfair' || !oc2.updated || (Date.now()-oc2.updated) > LIVE_TTL) {
-              oc2.match = tc.match; oc2.match_o1 = o1; oc2.match_o2 = o2; oc2.source = 'theodds';
-              oc2.updated = Date.now();
-              oddsCache.set(tm._key, oc2);
-            }
-          }
-          matched++;
+          tc.match_o1 = swapped ? p2Odd : p1Odd;
+          tc.match_o2 = swapped ? p1Odd : p2Odd;
+          tc.match = favOdd;
+          tc.source_match = 'theodds';
+          tc.updatedAt = Date.now();
+          tennisOddsCache.set(tm._key, tc);
+
+          // Mirror to oddsCache (normT reads this)
+          const oc2 = oddsCache.get(tm._key) || {};
+          oc2.match   = favOdd;
+          oc2.match_o1 = tc.match_o1;
+          oc2.match_o2 = tc.match_o2;
+          oc2.source  = 'theodds';
+          oc2.updated = Date.now();
+          oddsCache.set(tm._key, oc2);
+
+          totalMatched++;
+          console.log(`[THEODDS] Matched: ${tm.p1} vs ${tm.p2} → favOdd=${favOdd}`);
         }
       }
 
-      if (matched > 0) {
-        diag.theodds.lastOk = nowISO();
-        diag.theodds.cacheSize = tennisOddsCache.size;
-        console.log(`[THEODDS TENNIS] ${matched} partidos con cuotas`);
-        break; // got data, stop trying more endpoints
-      }
+      // Small delay to avoid rate limiting
+      await new Promise(r => setTimeout(r, 200));
+
     } catch(e) {
-      diag.theodds.lastErr = nowISO();
-      diag.theodds.lastErrMsg = e.message;
-      console.warn('[THEODDS TENNIS]', e.message);
+      // 404 = sport key doesn't exist, skip silently
+      if (!e.message.includes('404') && !e.message.includes('JSON')) {
+        diag.theodds.lastErrMsg = e.message;
+        console.warn('[THEODDS]', key, e.message);
+      }
     }
   }
-}
 
+  if (totalMatched > 0) {
+    diag.theodds.lastOk = nowISO();
+    diag.theodds.cacheSize = tennisOddsCache.size;
+    console.log(`[THEODDS] Total matched: ${totalMatched} matches with live odds`);
+  } else {
+    console.log('[THEODDS] No matches found in any sport key — odds will use AllSports pre-match');
+  }
+}
 // Keep AllSports pollOdds as additional source but with TTL protection already in place
 async function pollOdds() {
   if (!TENNIS_KEY) return;
@@ -1567,7 +1612,7 @@ const server=http.createServer((req,res)=>{
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify({
-      ok:true, version:'v15',
+      ok:true, version:'v16',
       football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
       betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
       oddsapiio: !!ODDS_API_IO_KEY,
@@ -1723,6 +1768,8 @@ const server=http.createServer((req,res)=>{
         call_count: diag.theodds.callCount,
         tennis_cache: tennisOddsCache.size,
         football_cache: footballOddsCache.size,
+        discovered_sport_keys: fetchTheOddsTennis._keys || [],
+        keys_loaded_at: fetchTheOddsTennis._loadedAt ? new Date(fetchTheOddsTennis._loadedAt).toISOString() : null,
       },
       live_tennis_count: liveTennis.length,
       live_football_count: liveFootball.length,
@@ -1782,7 +1829,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v15 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v16 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
