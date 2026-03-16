@@ -23,6 +23,7 @@ const alerted           = new Set();
 let   lastFootball      = [];
 let   allFootballForSim = [];   // FIX BUG 8: merge en vez de override
 let   lastTennis        = [];
+const finishedTennisCache = new Map(); // eventId → finalState, kept 2h for resolution
 let   nextFootball      = [];
 let   lastUpdate        = null;
 const stats             = { pollCount:0, alertsSent:0, errors:0 };
@@ -556,7 +557,7 @@ async function pollOdds() {
           const p1Obj = bData['Home']||bData['Player 1']||bData['First Player']||bData['1']||null;
           const p2Obj = bData['Away']||bData['Player 2']||bData['Second Player']||bData['2']||null;
           const o1 = medianOdd(p1Obj), o2 = medianOdd(p2Obj);
-          if (o1||o2) { existing.match_o1=o1; existing.match_o2=o2; existing.match=favIs==='p1'?o1:o2; existing.source='allsports'; changed=true; }
+          if (o1||o2) { existing.match_o1=o1; existing.match_o2=o2; existing.match=favIs==='p1'?o1:o2; existing.source='allsports_live'; existing.updated=Date.now(); changed=true; }
         }
         if (n.includes('set 2') || n.includes('2nd set')) {
           const p1Obj = bData['Home']||bData['Player 1']||bData['First Player']||null;
@@ -1340,6 +1341,20 @@ async function fetchTennis(){
     diag.tennis.lastErrMsg = lR.reason?.message || 'failed';
   }
 
+  // Save finished matches to cache BEFORE filtering them out (for resolution)
+  const now_ms = Date.now();
+  const FINISHED_TTL = 2 * 3600 * 1000; // keep 2h
+  liveRaw.forEach(e => {
+    if (isDoubles(e)) return;
+    if (e.event_status === 'Finished' || e.event_status === '1' || e.event_status === 'After Penalties') {
+      const key = 'td_' + e.event_key;
+      const normalised = normT(e);
+      finishedTennisCache.set(key, { ...normalised, finishedAt: now_ms });
+    }
+  });
+  // Prune old entries
+  finishedTennisCache.forEach((v, k) => { if (now_ms - v.finishedAt > FINISHED_TTL) finishedTennisCache.delete(k); });
+
   const liveSingles=liveRaw.filter(e=>!isDoubles(e)&&e.event_status!=='Finished');
   const upSingles=upRaw.filter(e=>e.event_live==='0'&&!isDoubles(e));
   const live=liveSingles.map(normT), up=upSingles.map(normTUp);
@@ -1472,7 +1487,9 @@ function checkSet1Loss(live){
 function resolveTennisSims(){
   simAlerts.forEach(s=>{
     if(s.resolved) return;
-    const m=lastTennis.find(x=>x.id===s._eventId); if(!m||m.isUp) return;
+    // Check live matches first, then recently finished matches
+    const m = lastTennis.find(x=>x.id===s._eventId) || finishedTennisCache.get(s._eventId);
+    if(!m||m.isUp) return;
     const favName=s._favIs==='First Player'?s.match.split(' vs ')[0]:(s.match.split(' vs ')[1]||'').trim();
     if(s.type==='tennis_break'&&m.sets1.length>s._setsP1atAlert.length){
       const idx=s._setNum-1, favWon=s._favIs==='First Player'?m.sets1[idx]>m.sets2[idx]:m.sets2[idx]>m.sets1[idx];
@@ -1612,7 +1629,7 @@ const server=http.createServer((req,res)=>{
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify({
-      ok:true, version:'v16',
+      ok:true, version:'v17',
       football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
       betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
       oddsapiio: !!ODDS_API_IO_KEY,
@@ -1829,7 +1846,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v16 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v17 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
