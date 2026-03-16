@@ -1173,7 +1173,21 @@ function tCardHtml(m){
   const monB=m.mon?'<span class="tc-mon yes">🟡 MONIT.</span>':'';
   const tk=m.cat==='itf_m'?'tennis_itf_m':m.cat==='itf_f'?'tennis_itf_f':m.cat==='wta125'?'tennis_wta125':m.cat==='wta'?'tennis_wta':m.cat==='challenger'?'tennis_ch':'tennis_atp';
   const cl=m.cat==='wta125'?'WTA 125':m.cat==='itf_m'?'ITF-M':m.cat==='itf_f'?'ITF-F':m.cat.toUpperCase();
-  const oddsNote=(!m.o1&&!m.o2)?'<div class="tc-badge" style="color:#ff8888">Sin cuotas disponibles</div>':'<div class="tc-badge hi">Pre-match: '+(m.o1??'n/d')+'x / '+(m.o2??'n/d')+'x</div>';
+  const ODD_MIN=1.20,ODD_MAX=1.60;
+  const favO = (m.o1!=null&&m.o1>=ODD_MIN&&m.o1<=ODD_MAX) ? m.o1 : (m.o2!=null&&m.o2>=ODD_MIN&&m.o2<=ODD_MAX) ? m.o2 : null;
+  const favName = favO===m.o1 ? m.p1 : m.p2;
+  // Cuota match: live si disponible (theodds/betfair), sino pre-match allsports
+  const dispOdd = m.odds_match || favO;
+  const dispSrc = m.odds_source || 'allsports';
+  const srcTag = dispSrc==='theodds'?'<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(94,200,248,.18);color:#6ec6ff;margin-left:4px">TO</span>'
+                :dispSrc==='betfair'?'<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(255,184,0,.18);color:#ffcc00;margin-left:4px">BF</span>'
+                :'<span style="font-family:IBM Plex Mono,monospace;font-size:8px;padding:1px 4px;border-radius:3px;background:rgba(120,120,120,.15);color:var(--wht4);margin-left:4px">AS</span>';
+  const isLiveOdd = dispSrc==='theodds'||dispSrc==='betfair'||dispSrc==='oddsapiio';
+  const oddsNote=(!m.o1&&!m.o2)?'<div class="tc-badge" style="color:#ff8888">Sin cuotas</div>'
+    :'<div class="tc-badge hi" style="gap:6px;display:flex;align-items:center;flex-wrap:wrap">'
+      +'Pre-match: '+(m.o1??'n/d')+'x / '+(m.o2??'n/d')+'x'
+      +(dispOdd&&isLiveOdd?'<span style="margin-left:6px;color:var(--grn);font-weight:600">Live: '+dispOdd+'x</span>'+srcTag:'')
+      +'</div>';
   // Marcador detallado: sets completados + set actual (juegos)
   // scoreDetail: leyenda de columnas alineada con tc-name flex:1
   const _legSets=Array.from({length:nSets},(_,i)=>'<div class="tset" style="font-size:8px;color:var(--wht4);background:none;border:none">S'+(i+1)+'</div>').join('');
