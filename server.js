@@ -573,7 +573,20 @@ async function pollOdds() {
           existing.current_o1=o1; existing.current_o2=o2; existing.current=favIs==='p1'?o1:o2; changed=true;
         }
       }
-      if (changed) { existing.updated=Date.now(); oddsCache.set(m._key,existing); diag.odds.lastOk=nowISO(); diag.odds.cacheSize=oddsCache.size; }
+      if (changed) {
+        existing.updated=Date.now();
+        oddsCache.set(m._key, existing);
+        // ALSO write to tennisOddsCache so resolveTennisOdds picks it up
+        const tcEntry = tennisOddsCache.get(m._key) || {};
+        if (!tcEntry.source_match || tcEntry.source_match === 'allsports' || tcEntry.source_match === 'allsports_live') {
+          if (existing.match)   { tcEntry.match = existing.match; tcEntry.source_match = 'allsports_live'; }
+          if (existing.set2)    { tcEntry.set2  = existing.set2; }
+          if (existing.current) { tcEntry.current = existing.current; }
+          tcEntry.updatedAt = Date.now();
+          tennisOddsCache.set(m._key, tcEntry);
+        }
+        diag.odds.lastOk=nowISO(); diag.odds.cacheSize=oddsCache.size;
+      }
     } catch(e) { diag.odds.lastErr=nowISO(); diag.odds.lastErrMsg=e.message; }
   }));
 }
@@ -1238,6 +1251,29 @@ function normalizeRound(raw) {
   return raw.trim().slice(0, 20);
 }
 
+// ── resolveTennisOdds — centralized priority chain ────────────────────────────
+// ChatGPT recommendation + our own analysis. Merges all sources with priority.
+function resolveTennisOdds(matchKey) {
+  const bf   = tennisOddsCache.get(matchKey) || {};          // Betfair / oddsapiio / theodds
+  const as   = oddsCache.get(matchKey)       || {};          // AllSports (pre-match & live)
+
+  // Determine best match odd
+  const match = bf.match ?? as.match ?? null;
+  const set2  = bf.set2  ?? as.set2  ?? null;
+  const curr  = bf.current ?? as.current ?? null;
+
+  // Determine source label (first available)
+  let source = null;
+  if      (bf.source_match === 'betfair')    source = 'betfair';
+  else if (bf.source_match === 'oddsapiio')  source = 'oddsapiio';
+  else if (bf.source_match === 'theodds')    source = 'theodds';
+  else if (as.source === 'allsports_live')   source = 'allsports_live';
+  else if (match != null)                    source = 'allsports';
+
+  return { match, set2, current: curr, source };
+}
+
+
 function normT(e){
   const _trnFull=(e.country_name||'')+' '+(e.league_name||'');
   const cat=getCat(_trnFull);
@@ -1285,16 +1321,14 @@ function normT(e){
     // The break will be detected when pbp becomes available
   }
   const mon=(o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX)||(o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX);
-  // FIX: read live odds (Betfair/oddsapiio) from tennisOddsCache first, fall back to AllSports oddsCache
-  const tcLive = tennisOddsCache.get(String(e.event_key)) || {};
-  const tcPre  = oddsCache.get(String(e.event_key)) || {};
-  // Derive match odd from .match (live/pre), or from o1/o2 if .match is null (pre-match fallback)
-  const preFav = (tcPre.o1!=null&&tcPre.o1>=ODD_MIN&&tcPre.o1<=ODD_MAX) ? tcPre.o1
-               : (tcPre.o2!=null&&tcPre.o2>=ODD_MIN&&tcPre.o2<=ODD_MAX) ? tcPre.o2 : null;
-  const liveMatch   = tcLive.match   || tcPre.match   || preFav || null;
-  const liveSet2    = tcLive.set2    || tcPre.set2    || null;
-  const liveCurrent = tcLive.current || tcPre.current || null;
-  const oddsSource  = tcLive.source_match || tcPre.source || (preFav ? 'allsports' : null);
+  // Use centralized resolver — priority: Betfair > oddsapiio > theodds > allsports_live > allsports
+  const _resolved = resolveTennisOdds(String(e.event_key));
+  // Fallback: use o1/o2 pre-match if no odds in any cache
+  const _preFav = (o1!=null&&o1>=ODD_MIN&&o1<=ODD_MAX) ? o1 : (o2!=null&&o2>=ODD_MIN&&o2<=ODD_MAX) ? o2 : null;
+  const liveMatch   = _resolved.match   ?? _preFav ?? null;
+  const liveSet2    = _resolved.set2    ?? null;
+  const liveCurrent = _resolved.current ?? null;
+  const oddsSource  = _resolved.source  ?? (_preFav!=null ? 'allsports' : null);
   return{id:'td_'+e.event_key,_key:String(e.event_key),cat,tier,surface,round,trn:e.league_name||'Torneo',
     p1:e.event_first_player||'?',p2:e.event_second_player||'?',
     o1,o2,sets1,sets2,g1,g2,pt1,pt2,srv:e.event_serve==='First Player'?1:2,
@@ -1565,12 +1599,12 @@ function startOddsPoll() {
   };
   setTimeout(runBetfair, 20000);
 
-  // BONUS: AllSports per-match odds — every 60s as additional source
+  // AllSports per-match odds — every 30s (primary live source for tennis)
   const runAllSports = async () => {
     try { await pollOdds(); } catch(e) { console.warn('[ALLSPORTS ODDS]', e.message); }
-    setTimeout(runAllSports, 60000);
+    setTimeout(runAllSports, 30000);
   };
-  setTimeout(runAllSports, 30000);
+  setTimeout(runAllSports, 5000); // start fast, 5s after boot
 
   // BONUS: odds-api.io fallback — every 5min
   const runFallback = async () => {
@@ -1629,7 +1663,7 @@ const server=http.createServer((req,res)=>{
   if(path==='/health'&&req.method==='GET'){
     res.writeHead(200);
     res.end(JSON.stringify({
-      ok:true, version:'v17',
+      ok:true, version:'v18',
       football:!!FOOTBALL_KEY, tennis:!!TENNIS_KEY, theodds:!!THEODDS_KEY,
       betfair: BETFAIR_SSOID ? (diag.betfair.ssoExpired ? '⚠ SSO_EXPIRED' : '✓') : '✗ MISSING',
       oddsapiio: !!ODDS_API_IO_KEY,
@@ -1846,7 +1880,7 @@ const server=http.createServer((req,res)=>{
 });
 
 server.listen(PORT, async ()=>{
-  console.log(`\n🎾 ROTURAS25 v17 — puerto ${PORT}`);
+  console.log(`\n🎾 ROTURAS25 v18 — puerto ${PORT}`);
   console.log(`   Football:${FOOTBALL_KEY?'✓':'✗'}  Tennis:${TENNIS_KEY?'✓':'✗'}  TheOdds:${THEODDS_KEY?'✓':'✗'}  Betfair:${BETFAIR_SSOID?'✓':'✗ falta BETFAIR_SSOID'}  OddsApiIo:${ODDS_API_IO_KEY?'✓':'✗'}  TG:${TG_TOKEN?'✓':'✗'}`);
   console.log(`   ODD_MIN:${ODD_MIN}  ODD_MAX:${ODD_MAX}\n`);
   await loadSurfaceCache();
